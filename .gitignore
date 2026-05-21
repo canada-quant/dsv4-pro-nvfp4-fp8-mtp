@@ -1,0 +1,30 @@
+# Private agent-only files — never push these to the public repo
+CLAUDE.md
+SYSTEM_PROMPT.md
+memory/
+
+# Calibration / postprocess intermediates
+_progress.json
+*.bak_*
+config.json.backup_*
+_per_layer_checkpoints/
+.cache/
+
+# Build artifacts
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Local scratch
+scratch/
+tmp/
+*.log
