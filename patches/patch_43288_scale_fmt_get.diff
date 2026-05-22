@@ -1,0 +1,14 @@
+diff --git a/vllm/models/deepseek_v4/nvidia/model.py b/vllm/models/deepseek_v4/nvidia/model.py
+index 395cd0201b..4ba1b3bea9 100644
+--- a/vllm/models/deepseek_v4/nvidia/model.py
++++ b/vllm/models/deepseek_v4/nvidia/model.py
+@@ -906,7 +906,8 @@ class DeepseekV4Attention(nn.Module):
+             prefix=f"{prefix}.wo_b",
+         )
+         self.softmax_scale = self.head_dim**-0.5
+-        self.scale_fmt = config.quantization_config["scale_fmt"]
++        _qc = getattr(config, "quantization_config", None) or {}
++        self.scale_fmt = _qc.get("scale_fmt", "ue8m0")
+ 
+         self.rope_parameters = config.rope_scaling
+ 

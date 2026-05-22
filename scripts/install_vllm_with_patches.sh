@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Build vLLM from source with the 5 local patches needed to serve
-# canada-quant/DeepSeek-V4-Flash-NVFP4-FP8-MTP until those patches merge upstream.
+# Build vLLM from source pinned at an upstream commit + apply the 4 open
+# patches needed to serve canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP until
+# they merge upstream.
 #
 # Usage:
-#   curl -sL https://raw.githubusercontent.com/canada-quant/dsv4-flash-nvfp4-fp8-mtp/main/scripts/install_vllm_with_patches.sh | bash
+#   curl -sL https://raw.githubusercontent.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/main/scripts/install_vllm_with_patches.sh | bash
 #
 # Environment overrides (all optional):
 #   VLLM_SRC_DIR       Where to clone vLLM (default: $HOME/src/vllm)
-#   VLLM_REF           vLLM ref to base on (default: main)
+#   VLLM_REF           vLLM ref to base on (default: pinned SHA below)
+#   PATCHES_REPO_RAW   Raw URL prefix for the 4 .diff files (default: this repo's main)
 #   TORCH_CUDA_ARCH    Compute capability for build (default: auto-detect)
 #   SKIP_BUILD         If "1", patch only — don't run pip install
 #   SKIP_DEPS          If "1", don't install bench/eval deps (langdetect, evalplus, etc.)
@@ -17,15 +19,23 @@
 
 set -euo pipefail
 
-# ---------- config ----------
+# ---------- pinned upstream commit ----------
+# This commit is the vLLM main HEAD verified on 2026-05-22 to serve native
+# DeepSeek-V4-Pro (MXFP4 experts + FP8 block attention + MTP) with the 4
+# applied patches below. The V4-Pro subpackage at vllm/models/deepseek_v4/
+# is present at this commit. Update the SHA when bumping to a newer base.
+VLLM_PINNED_SHA="${VLLM_PINNED_SHA:-39910f2b25}"
+PATCHES_REPO_RAW="${PATCHES_REPO_RAW:-https://raw.githubusercontent.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/main/patches}"
 VLLM_SRC_DIR="${VLLM_SRC_DIR:-$HOME/src/vllm}"
-VLLM_REF="${VLLM_REF:-main}"
+VLLM_REF="${VLLM_REF:-$VLLM_PINNED_SHA}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_DEPS="${SKIP_DEPS:-0}"
 
-echo "==> install_vllm_with_patches.sh — preparing vLLM build for canada-quant/DeepSeek-V4-Flash-NVFP4-FP8-MTP"
+echo "==> install_vllm_with_patches.sh — preparing vLLM build for"
+echo "    canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP"
 echo "    VLLM_SRC_DIR=$VLLM_SRC_DIR"
-echo "    VLLM_REF=$VLLM_REF"
+echo "    VLLM_REF=$VLLM_REF  (pinned upstream: $VLLM_PINNED_SHA)"
+echo "    PATCHES_REPO_RAW=$PATCHES_REPO_RAW"
 
 # ---------- detect compute capability ----------
 if [ -z "${TORCH_CUDA_ARCH:-}" ]; then
@@ -58,11 +68,11 @@ esac
 
 # ---------- prerequisites ----------
 echo "==> checking prerequisites"
-for cmd in git python3 pip; do
+for cmd in git python3 pip curl; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "ERROR: $cmd not found in PATH"; exit 1; }
 done
 
-# CUDA_HOME (needs full toolkit, not just runtime — Tilelang invokes nvcc at runtime)
+# CUDA_HOME — needs full toolkit, not just runtime (Tilelang invokes nvcc at runtime).
 if [ -z "${CUDA_HOME:-}" ]; then
   if [ -d /usr/local/cuda ]; then
     export CUDA_HOME=/usr/local/cuda
@@ -75,83 +85,142 @@ if [ -z "${CUDA_HOME:-}" ]; then
   fi
 fi
 
+# setuptools-rust + Rust toolchain — required since vLLM PR #43283 introduced
+# the Rust frontend. Without these, pyproject.toml metadata generation fails
+# with "ModuleNotFoundError: No module named 'setuptools_rust'".
+echo "==> installing setuptools-rust + Rust toolchain if absent"
+if ! python3 -c "import setuptools_rust" >/dev/null 2>&1; then
+  echo "    installing setuptools-rust"
+  pip install --quiet "setuptools-rust>=1.9.0"
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+  if [ -d "$HOME/.cargo" ]; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "    installing rustup (user install, no sudo)"
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
+cargo --version
+rustc --version
+
 # ---------- clone / fetch vLLM ----------
 if [ ! -d "$VLLM_SRC_DIR/.git" ]; then
   echo "==> cloning vllm-project/vllm to $VLLM_SRC_DIR"
   git clone https://github.com/vllm-project/vllm "$VLLM_SRC_DIR"
 fi
 cd "$VLLM_SRC_DIR"
-git fetch origin --quiet
+
+# Make sure upstream remote points at vllm-project (in case this repo was set
+# up with a different "origin").
+if ! git remote get-url upstream >/dev/null 2>&1; then
+  git remote add upstream https://github.com/vllm-project/vllm.git
+fi
+git fetch upstream --quiet
+
+# Check out the pinned base. If $VLLM_REF is a SHA, this lands at a detached
+# HEAD; we make a clean branch from it so commits land somewhere named.
+git reset --hard HEAD 2>/dev/null || true
 git checkout "$VLLM_REF" --quiet
-git pull --ff-only --quiet || true
+HEAD_SHA="$(git rev-parse --short HEAD)"
+echo "==> base commit: $HEAD_SHA ($(git log -1 --format='%s'))"
+
+BRANCH_NAME="canada-quant-v4pro-nvfp4"
+if git rev-parse --verify "$BRANCH_NAME" >/dev/null 2>&1; then
+  git checkout "$BRANCH_NAME" --quiet
+  git reset --hard "$HEAD_SHA" --quiet
+else
+  git checkout -b "$BRANCH_NAME" --quiet
+fi
+
+# ---------- clean stale cmake caches ----------
+# .deps from a prior build at a different generator (Ninja vs Make) causes
+# cmake to refuse with "Does not match the generator used previously".
+echo "==> cleaning stale cmake caches"
+rm -rf .deps build
+find . -name "CMakeCache.txt" -delete 2>/dev/null
+find . -name "CMakeFiles" -type d -exec rm -rf {} + 2>/dev/null
 
 # ---------- apply the 4 patches ----------
-echo "==> applying 4 local patches (PRs #43248, #43288, #43290, #43319)"
+echo "==> applying 4 patches (PRs #43248, #43288, #43290, #43319)"
 
-# Patch 1 — bool() wrap on is_static_input_scheme (PR #43248)
-# Sites: 5 occurrences in compressed_tensors.py
-CT_FILE="vllm/model_executor/layers/quantization/compressed_tensors/compressed_tensors.py"
-if grep -q "is_static_input_scheme = input_quant and not input_quant.dynamic" "$CT_FILE"; then
-  echo "    patching #43248: bool() wrap in $CT_FILE (5 sites)"
-  sed -i 's|is_static_input_scheme = input_quant and not input_quant.dynamic|is_static_input_scheme = bool(input_quant and not input_quant.dynamic)|g' "$CT_FILE"
-else
-  echo "    skipping #43248 (already applied or merged)"
-fi
+PATCH_TMPDIR="$(mktemp -d)"
+trap "rm -rf $PATCH_TMPDIR" EXIT
 
-# Patch 2 + 3 — scale_fmt defensive .get + getattr wrapping (PR #43288 + BF16 follow-up)
-M_FILE="vllm/models/deepseek_v4/nvidia/model.py"
-if grep -q 'self.scale_fmt = config.quantization_config\["scale_fmt"\]' "$M_FILE"; then
-  echo "    patching #43288 (original .get): $M_FILE"
-  sed -i 's|self.scale_fmt = config.quantization_config\["scale_fmt"\]|self.scale_fmt = config.quantization_config.get("scale_fmt", "ue8m0")|g' "$M_FILE"
-fi
-if grep -q 'self.scale_fmt = config.quantization_config.get("scale_fmt", "ue8m0")' "$M_FILE"; then
-  echo "    patching #43288 BF16 follow-up: getattr wrap in $M_FILE"
-  python3 - <<PYEOF
-p = "$M_FILE"
-src = open(p).read()
-old = '        self.scale_fmt = config.quantization_config.get("scale_fmt", "ue8m0")'
-new = '        _qc = getattr(config, "quantization_config", None) or {}\n        self.scale_fmt = _qc.get("scale_fmt", "ue8m0")'
-if old in src:
-    src = src.replace(old, new)
-    open(p, "w").write(src)
-    print("      wrote BF16 getattr wrap")
-else:
-    print("      no exact match for BF16 wrap (already applied or moved)")
-PYEOF
-else
-  echo "    skipping #43288 (already applied or merged)"
-fi
-
-# Patch 4 — weight_scale_inv-or-weight_scale fallback (PR #43290)
-A_FILE="vllm/models/deepseek_v4/attention.py"
-if grep -q 'weight_scale_inv = self.wo_a.weight_scale_inv' "$A_FILE"; then
-  echo "    patching #43290: weight_scale_inv fallback in $A_FILE"
-  sed -i 's|weight_scale_inv = self.wo_a.weight_scale_inv|weight_scale_inv = getattr(self.wo_a, "weight_scale_inv", None) or self.wo_a.weight_scale|g' "$A_FILE"
-else
-  echo "    skipping #43290 (already applied or merged)"
-fi
-
-# Patch 5 — MTP-quant-detect (PR #43319)
-# More complex than sed — cherry-pick from canada-quant fork if not yet on main
-if ! grep -q "_mtp_block_is_quantized_on_disk" vllm/models/deepseek_v4/nvidia/mtp.py 2>/dev/null; then
-  echo "    patching #43319: cherry-picking from canada-quant:fix/dsv4-mtp-draft-quant-detect"
-  git remote add canada-quant https://github.com/canada-quant/vllm.git 2>/dev/null || true
-  git fetch canada-quant fix/dsv4-mtp-draft-quant-detect --quiet
-  if ! git cherry-pick --no-commit FETCH_HEAD; then
-    echo "    cherry-pick had conflicts — falling back to PR #43319 diff manually"
-    git cherry-pick --abort 2>/dev/null || true
-    echo "    NOTE: PR #43319 must be applied manually until cleanly cherry-pickable"
-    echo "    See docs/VLLM_SETUP_ISSUES.md in this repo for the full diff."
+apply_patch () {
+  local name="$1"
+  local pr="$2"
+  local url="$PATCHES_REPO_RAW/$name"
+  local msg="$3"
+  local local_path="$PATCH_TMPDIR/$name"
+  echo "--- $name (PR #$pr) ---"
+  if ! curl -sSL "$url" -o "$local_path"; then
+    echo "    ERROR: failed to fetch $url"
+    exit 1
   fi
-else
-  echo "    skipping #43319 (already applied or merged)"
-fi
+  if ! git apply --check "$local_path" 2>/dev/null; then
+    # Already applied (line context matches the patched state, not the original)
+    if git apply --check --reverse "$local_path" 2>/dev/null; then
+      echo "    already applied — skipping"
+      return 0
+    fi
+    echo "    WARNING: patch does not apply cleanly; attempting 3-way merge"
+    if ! git apply --3way "$local_path"; then
+      echo "    ERROR: $name failed to apply. Inspect $local_path."
+      exit 1
+    fi
+  else
+    git apply "$local_path"
+  fi
+  git add -A
+  git -c user.email="quant@canada-quant.io" -c user.name="canada-quant" \
+    commit --quiet -m "$msg"
+}
+
+apply_patch "patch_43248_ct_bool_wrap.diff" 43248 \
+  "Apply PR #43248: bool() wrap on is_static_input_scheme
+
+Wraps the truthy expression in bool() at 2 sites in
+compressed_tensors.py so input_quant=None (which is legal for some
+schemes) returns False instead of None.
+Pending upstream PR: https://github.com/vllm-project/vllm/pull/43248"
+
+apply_patch "patch_43288_scale_fmt_get.diff" 43288 \
+  "Apply PR #43288: scale_fmt defensive read + BF16 getattr wrap
+
+deepseek_v4/nvidia/model.py:909 was hard-subscripting
+config.quantization_config[\"scale_fmt\"]; crashes if (a) the config
+lacks scale_fmt or (b) quantization_config is absent (BF16 serving).
+Pending upstream PR: https://github.com/vllm-project/vllm/pull/43288"
+
+apply_patch "patch_43290_weight_scale_fallback.diff" 43290 \
+  "Apply PR #43290: weight_scale_inv-or-weight_scale fallback
+
+deepseek_v4/attention.py wo_a access raised AttributeError when
+weights store weight_scale (the FP8 block convention used by V4-Pro
+attention). Load-blocking for V4-Pro without this patch.
+Pending upstream PR: https://github.com/vllm-project/vllm/pull/43290"
+
+apply_patch "patch_43319_mtp_quant_detect.diff" 43319 \
+  "Apply PR #43319: MTP quant detection from safetensors header
+
+deepseek_v4/nvidia/mtp.py defaulted to assuming MTP is BF16 and
+skipped quant_config wiring. V4-Pro MTP IS quantized on disk (MXFP4
+experts); MTP loader inspects safetensors header for
+.experts.*.w[123].scale and routes through quant_config when present.
+Required for V4-Pro MTP serving.
+Pending upstream PR: https://github.com/vllm-project/vllm/pull/43319"
+
+echo "==> final branch state"
+git log --oneline -7
 
 # ---------- build ----------
 if [ "$SKIP_BUILD" = "1" ]; then
   echo "==> SKIP_BUILD=1, leaving build to caller"
 else
-  echo "==> building vLLM (TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH, this takes ~10-20 min on a fast machine)"
+  echo "==> building vLLM (TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH, takes ~10-20 min)"
   TORCH_CUDA_ARCH_LIST="$TORCH_CUDA_ARCH" pip install -e . --no-build-isolation
 fi
 
@@ -161,23 +230,36 @@ if [ "$SKIP_DEPS" != "1" ]; then
   pip install --quiet langdetect immutabledict nltk evalplus openai datasets || true
 fi
 
+# ---------- import smoke ----------
+echo "==> import smoke test"
+python3 -c "
+from vllm.models.deepseek_v4 import quant_config, compressor, attention
+from vllm.model_executor.layers import mhc
+print('vllm.models.deepseek_v4 + mhc import: ok')
+import vllm
+print('vllm version:', vllm.__version__)
+"
+
 # ---------- summary ----------
 cat <<EOM
 
 ==> Done.
 
-Quick smoke:
+Quick smoke (native V4-Pro MXFP4-FP8-MTP):
 
-    CUDA_HOME=/usr/local/cuda VLLM_TEST_FORCE_FP8_MARLIN=1 \\
-      vllm serve canada-quant/DeepSeek-V4-Flash-NVFP4-FP8-MTP \\
-      --tensor-parallel-size 4 \\
-      --kv-cache-dtype fp8 \\
-      --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
+    CUDA_HOME=/usr/local/cuda \\
+      vllm serve /path/to/DeepSeek-V4-Pro \\
+      --trust-remote-code --kv-cache-dtype fp8 --block-size 256 \\
+      --enable-expert-parallel --tensor-parallel-size 8 \\
+      --moe-backend deep_gemm_mega_moe \\
+      --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
 
-For full instructions, see:
-    https://github.com/canada-quant/dsv4-flash-nvfp4-fp8-mtp/blob/main/docs/QUICKSTART.md
+(Recipe page: https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Pro)
+
+For full instructions:
+    https://github.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/blob/main/docs/QUICKSTART.md
 
 For the rationale on each patch:
-    https://github.com/canada-quant/dsv4-flash-nvfp4-fp8-mtp/blob/main/docs/VLLM_SETUP_ISSUES.md
+    https://github.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/blob/main/docs/VLLM_SETUP_ISSUES.md
 
 EOM

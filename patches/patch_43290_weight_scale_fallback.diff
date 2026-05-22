@@ -1,0 +1,46 @@
+diff --git a/vllm/models/deepseek_v4/attention.py b/vllm/models/deepseek_v4/attention.py
+index b773f9cbbc..45e60bd5ac 100644
+--- a/vllm/models/deepseek_v4/attention.py
++++ b/vllm/models/deepseek_v4/attention.py
+@@ -187,6 +187,13 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
+ 
+         self.kv_norm = mla_modules.kv_norm
+         self.wo_a = mla_modules.wo_a
++        # Cache wo_a quant state at init so torch.compile doesn't try to
++        # trace hasattr() on an attribute that may or may not exist.
++        # See vLLM #43304: MTP draft models may have BF16 wo_a (no scale).
++        self._wo_a_is_unquantized = (
++            not hasattr(mla_modules.wo_a, 'weight_scale_inv')
++            and not hasattr(mla_modules.wo_a, 'weight_scale')
++        )
+ 
+         self._wo_a_act_quant = QuantFP8(
+             static=False,
+@@ -306,7 +313,12 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
+         o = o_padded[:, : self.n_local_heads, :]
+ 
+         # Keep ROCm on the BF16 reference wo_a path util kernel ready.
+-        if current_platform.is_rocm():
++        # Also use the BF16 reference path when wo_a is unquantized — this
++        # is the case for MTP draft models on artifacts that exclude the
++        # MTP block from calibration (see vLLM #43304 + llm-compressor
++        # #2745). The rocm_inv_rope_einsum helper already handles both the
++        # quantized and BF16 wo_a cases via its own hasattr check.
++        if current_platform.is_rocm() or self._wo_a_is_unquantized:
+             z = rocm_inv_rope_einsum(
+                 self.rotary_emb,
+                 o,
+@@ -331,7 +343,7 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
+         )
+ 
+         wo_a_fp8 = self.wo_a.weight
+-        wo_a_scale = self.wo_a.weight_scale_inv
++        wo_a_scale = getattr(self.wo_a, "weight_scale_inv", None) or self.wo_a.weight_scale
+ 
+         z = torch.empty(
+             (num_tokens, self.n_local_groups, self.o_lora_rank),
+@@ -1186,3 +1198,4 @@ class DeepseekV4Indexer(nn.Module):
+             use_fp4=self.use_fp4_kv,
+         )
+         return self.indexer_op(hidden_states, q_quant, k, weights)
++
