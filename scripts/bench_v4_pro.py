@@ -238,11 +238,19 @@ async def run_aime(args) -> dict:
     if args.limit:
         ds = ds.select(range(min(args.limit, len(ds))))
 
-    # Find problem and answer fields
+    # Find problem and answer fields. PRIORITY ORDER matters: prefer
+    # 'answer' over 'solution' (the latter is a step-by-step explanation
+    # whose first integer is usually a step number).
     cols = ds.column_names
     print(f"  columns: {cols}", file=sys.stderr)
-    prob_field = next((c for c in cols if c.lower() in ("problem", "question", "prompt")), cols[0])
-    ans_field = next((c for c in cols if c.lower() in ("answer", "solution", "gold")), None)
+    def first_col_matching(preferences: list[str]) -> str | None:
+        for pref in preferences:
+            for c in cols:
+                if c.lower() == pref:
+                    return c
+        return None
+    prob_field = first_col_matching(["problem", "question", "prompt"]) or cols[0]
+    ans_field = first_col_matching(["answer", "gold", "label", "solution"])
     print(f"  using prob_field={prob_field!r} ans_field={ans_field!r}", file=sys.stderr)
 
     # Prompt template — let model think then give final integer
