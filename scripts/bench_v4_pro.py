@@ -56,15 +56,21 @@ async def chat_complete(
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
-    async with session.post(
-        f"{base_url}/v1/chat/completions",
-        json=payload,
-        timeout=aiohttp.ClientTimeout(total=timeout),
-    ) as resp:
-        data = await resp.json()
+    try:
+        async with session.post(
+            f"{base_url}/v1/chat/completions",
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as resp:
+            data = await resp.json()
+    except (asyncio.TimeoutError, aiohttp.ClientError, Exception) as e:
+        return CompletionResult(
+            text=f"<<EXCEPTION: {type(e).__name__}: {str(e)[:200]}>>",
+            finish_reason="error",
+            elapsed_s=time.time() - t0,
+        )
     elapsed = time.time() - t0
     if "choices" not in data:
-        # error response
         return CompletionResult(
             text=f"<<ERROR: {data}>>",
             finish_reason="error",
