@@ -66,6 +66,16 @@ Steps:
    `curl http://localhost:8089/v1/chat/completions -d '{...}'` returns a coherent
    answer. Check Prometheus `vllm:spec_decode_num_accepted_tokens_total`
    increments — confirms MTP draft path is active.
+7. **Compute per-token active params** from `vendor/dsv4-pro-upstream/config.json`
+   directly, do not infer from V4-Flash scaling. Math:
+   - Attention (MLA): `q_lora_rank * hidden + hidden * (head_dim + qk_rope_head_dim) * num_heads + wo_a + wo_b` per active layer
+   - Routed experts active: `num_experts_per_tok * 3 * hidden * moe_intermediate_size`
+   - Shared expert: `3 * hidden * moe_intermediate_size`
+   - Indexer + compressor: read from `config.json` (`index_n_heads * index_head_dim * 2`)
+   - HC overhead: `2 * 24 * (4 * hidden)` per layer (negligible)
+   - Multiply per-MoE-layer figure by 60 (61 layers with `first_k_dense_replace=1` per DSV3 convention; verify exactly), add MTP layer, attention path, embed/head
+   Output: a single verified number to record in MODEL_CARD. This resolves the
+   "30–40 B vs 49 B" open question before any later phase needs it.
 
 **Patch disposition rule** (explicit to override the agent's preservation
 instinct): any of the 5 V4-Flash patches superseded by the V4-Pro subpackage
@@ -83,10 +93,17 @@ Gates (proceed to Phase 1 only when ALL pass):
 - [ ] `vllm serve` reaches "Application startup complete"
 - [ ] One round-trip prompt returns sane output
 - [ ] MTP acceptance counter increments (>0 accepted tokens)
+- [ ] Per-token active param count computed from config.json and recorded
 
 Risk: V4-Flash patches conflict with the V4-Pro subpackage rewrite. Mitigation:
 treat them as legacy; only retain the ones still applicable to V4-Pro per the
 audit. File fresh PRs for anything V4-Pro-specific that surfaces.
+
+**Execution discipline**: report back to the supervisor after step 2 (the
+V4-Flash patch diff against current main), before doing the venv rebuild in
+step 3. The patch-disposition decision is the highest-uncertainty step of
+Phase 0 and the one where "drop, not rebase" discipline most matters —
+catching drift before a rebuild is cheaper than catching it after.
 
 ## Phase 1 — NVFP4 vs MXFP4 perf microbenchmark on B300 V4-Pro shapes (0.5–1 session)
 
@@ -109,6 +126,12 @@ Steps:
 2. Write `scripts/bench_nvfp4_vs_mxfp4_b300.py` running both at batch=1, 4,
    16, 64, 256, sequence=512, 2048. Report TFLOPS, latency, memory bandwidth.
 3. Output: `docs/benchmarks/nvfp4_vs_mxfp4_b300_v4pro_shapes.md`.
+
+**Scope discipline**: using a CUTLASS NVFP4 kernel in the microbenchmark
+is fine — Phase 1 is measurement, not implementation. **Do not let a
+CUTLASS call written for Phase 1 drift into Phase 5 implementation.**
+Phase 5's kernel choice is still Triton-fallback-only; any CUTLASS work
+that's not measurement is Phase 8 only if Phase 6 numbers justify it.
 
 Gates (none; measurement only). Findings inform:
 - The perf claim language in MODEL_CARD ("NVFP4 is X% faster than MXFP4 on
@@ -257,13 +280,28 @@ do show up as wrong logits. Bridges the gap between "artifact exists on disk"
 serve-time logits bug surfaces only as garbled output from vLLM and is
 hard-to-impossible to debug from inside the serve stack.
 
+**HBM feasibility note**: native ~864 GB + converted ~910 GB = ~1.77 TB
+of weights. On 8× B300 = 2.24 TB total HBM, that leaves ~470 GB across
+8 GPUs for activations + the comparison machinery. Probably fits for a
+32-token prompt at TP=8 with no KV cache, but is not guaranteed. The
+agent should size feasibility against actual measured weight load
+footprint (Phase 0 output) and pick one of:
+- **Pattern A — simultaneous load**: both models resident, single forward
+  pass each, immediate logits comparison. Faster, requires the math to
+  fit.
+- **Pattern B — sequential load**: load native, run forward, save logits
+  to disk (BF16 tensor, ~vocab×seq×2 bytes = a few MB), unload, load
+  converted, run forward, compare against disk-cached native logits.
+  Slower, no OOM risk.
+Decide which pattern based on the actual measured weight footprint, not
+assumed footprint. Document the choice in the Phase 3.5 output.
+
 Steps:
 
 1. Load both models as plain torch modules using `vendor/dsv4-pro-upstream/model.py`
    (not vLLM): native MXFP4 from `/scratch/weights/v4-pro-native-mxfp4-mtp/`
    and converted NVFP4 from `/scratch/weights/v4-pro-nvfp4-fp8-mtp/`. Both
-   in eval mode, both on the same set of GPUs (TP=8 or TP=4 depending on
-   what fits BF16-internal-precision math at activation paths).
+   in eval mode. Layout per the feasibility pattern chosen above.
 2. Feed one short prompt (e.g., 32 tokens of "The quick brown fox") through
    both. Capture the final-layer logits as BF16 tensors.
 3. Compute logits diff statistics: max-abs-diff, mean-abs-diff, max-rel-diff,
@@ -314,10 +352,12 @@ Steps:
 6. Output: `docs/findings/vllm_nvfp4_v4pro_design.md` — the design doc.
    Sections: weight loading contract, scale-tensor naming, forward kernel
    choice, compatibility with `--speculative-config method=mtp`, list of
-   files added/modified with a **line-count estimate** per file (used as
-   the early-stop signal: if the design implies > ~2000 net new lines in
-   vLLM, that's an order-of-magnitude beyond expected scope and should
-   trigger a rescoping conversation before Phase 5 begins).
+   files added/modified with a **line-count estimate** per file. ~2000
+   net new lines is a rough sanity-check anchor (based on comparable
+   quant-method additions to vLLM), not a tripwire — the supervisor
+   reviews proportionality. State the estimate, what's in it, what's
+   deferred to Phase 8, and let the supervisor call whether Phase 5
+   begins as scoped or gets rescoped.
 7. **Maintainer pre-ping** (intel, not a gate): post a short discussion
    on the vLLM repo (or a short note on PR #40760) tagging
    `@WoosukKwon @zyongye @ivanium` asking whether an `Nvfp4MoEMethod` for
@@ -339,8 +379,9 @@ Gates (proceed to Phase 5 only when ALL pass):
 - [ ] NVFP4 GEMM choice locked (DeepGEMM, vLLM-vendored Triton, or external
       `deep_gemm` / `sgl-deep-gemm`; **no CUTLASS-from-scratch path at
       this phase** — see Phase 5 fall-back)
-- [ ] Line-count estimate recorded in design doc; if > 2000 net new
-      lines, stop and rescope
+- [ ] Line-count estimate recorded in design doc with breakdown
+      (what's in it; what's deferred to Phase 8); supervisor reviews
+      proportionality before Phase 5 begins
 - [ ] Scale-tensor naming convention finalized; Phase 3 conversion script
       regenerates artifact if naming changes
 - [ ] Maintainer pre-ping sent (response not required to proceed)
@@ -489,14 +530,14 @@ Voice rules:
 | Risk | Impact | Likelihood | Mitigation |
 |---|---|---|---|
 | V4-Flash patches conflict with V4-Pro subpackage on rebuild | Phase 0 blocked | high | Diff first, retire patches that are obsolete. Net work likely smaller than carrying 5 patches forward. |
-| NVFP4 GEMM kernel for V4-Pro shapes does not exist on sm_103a | Phase 5 perf is poor | medium | Triton fallback first, CUTLASS-based custom kernel second. Ship with documented perf gap; don't block artifact. |
+| NVFP4 GEMM kernel for V4-Pro shapes does not exist on sm_103a | Phase 5 perf is poor | medium | Triton fallback at Phase 5 (correctness-only; perf is not gated at Phase 5). CUTLASS-based custom kernel is Phase 8 only, if Phase 6 numbers justify it. Ship Phase 7 with documented perf gap; don't block the artifact on a custom kernel. |
 | Conversion math has hidden bug that corrupts a subset of experts | Phase 6 quality drops | medium | Per-shard hashing + spot-check against native dequant; full BF16-dequant comparison before publish. |
 | Native MXFP4 V4-Pro doesn't serve on our box's vLLM build | Phase 0 blocked | low | Rebuild against current main; this is expected work, not a true risk. |
 | MTP draft acceptance drops in NVFP4 vs native MXFP4 | speedup story weakens | low–medium | NVFP4 weights are conversion of the same FP4 values; acceptance should match within noise. If not, investigate per-layer error and adjust per-tensor S_g policy. |
 | TP=8 doesn't fit NVFP4 V4-Pro KV cache at full context | can't serve long contexts | low | NVFP4 weight footprint ~ same as MXFP4 (extra scales offset by no other delta) = ~108 GB/GPU. 288 GB - 108 GB = 180 GB / GPU for KV + activations. Should be ample. |
 | Recipes.vllm.ai maintainers won't accept an "NVFP4-V4-Pro" recipe | Phase 7 upstream blocked | medium | Ship the artifact + own documentation regardless; upstream is a parallel contribution, not a gate. |
 | zyongye / Inferact pushback on Nvfp4MoEMethod design | vLLM PR delayed | medium | Phase 4 maintainer pre-ping is intel for exactly this. Engage early with the design doc, not the PR. Their model expertise improves the design; their goodwill is needed for the merge. If pre-ping reveals they have a competing internal design, pause and coordinate before writing Phase 5 code. |
-| Phase 4 design line-count estimate balloons past 2000 net new lines | scope creep silently expands | medium | Phase 4 gate requires explicit estimate; if it crosses 2000 lines, stop and rescope with the user before Phase 5 begins. |
+| Phase 4 design line-count estimate balloons past the ~2000-line sanity anchor | scope creep silently expands | medium | Phase 4 gate requires explicit estimate with breakdown (what's in it, what's deferred to Phase 8). Supervisor reviews proportionality; ~2000 is an anchor, not an auto-tripwire. |
 | NVFP4 perf delta vs MXFP4 turns out flat or negative on B300 | claim language constrained | medium | Already anticipated. Phase 1 microbenchmark settles this. Artifact still ships; framing shifts from "perf win" to "ecosystem reach / NVIDIA-native format compatibility". |
 | Phase 7 HF upload reveals safetensors metadata mismatch | publish delayed | low | Validate locally via fresh HF download + load before pushing public. |
 
@@ -514,9 +555,6 @@ Voice rules:
 2. Exact NVFP4 scale-tensor naming convention used by vLLM (answer in Phase 4)
 3. Whether MTP draft acceptance is preserved across MXFP4 → NVFP4 conversion
    (answer in Phase 6)
-4. Precise per-token active param count for V4-Pro (still pending exact
-   computation from the model graph; supervisor brief said 49 B,
-   our rough estimate is 30–40 B)
-5. Whether `num_hash_layers: 3` (V4-Pro config field) affects conversion
+4. Whether `num_hash_layers: 3` (V4-Pro config field) affects conversion
    (answer in Phase 2 — likely no, it's an indexer parameter not a weight
    storage parameter)
