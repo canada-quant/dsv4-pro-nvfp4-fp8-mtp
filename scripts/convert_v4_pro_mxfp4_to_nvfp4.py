@@ -188,6 +188,8 @@ def convert_expert_mxfp4_to_nvfp4(
     device: torch.device,
     fp4_mags: torch.Tensor,
     e4m3_sorted: torch.Tensor,
+    *,
+    forced_s_g: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, float]:
     """Convert one expert weight tensor MXFP4 → NVFP4.
 
@@ -212,8 +214,12 @@ def convert_expert_mxfp4_to_nvfp4(
     per_group_amax = grouped.abs().amax(dim=-1)  # [out, n_groups]
 
     # 3. Per-tensor S_g: saturate E4M3 max on the largest per-group amax
-    max_amax = float(per_group_amax.max().item())
-    s_g = max_amax / (FP4_MAX * E4M3_MAX) if max_amax > 0 else 1.0
+    # Or use a forced value (for w1/w3 to share scale per ModelOpt requirement)
+    if forced_s_g is not None and forced_s_g > 0:
+        s_g = forced_s_g
+    else:
+        max_amax = float(per_group_amax.max().item())
+        s_g = max_amax / (FP4_MAX * E4M3_MAX) if max_amax > 0 else 1.0
     if s_g <= 0:
         s_g = 1.0
 
@@ -340,32 +346,76 @@ def convert_shard(
             new_tensors[k] = f.get_tensor(k)
 
         # Convert expert pairs (MXFP4 → NVFP4)
+        # Two-pass to share S_g across w1+w3 of each expert (TRTLLM
+        # kernel uses w1's weight_scale_2 for both w1 and w3; values
+        # must match for correct dequant).
+        # Pass 1: group expert_pairs by (expert_id, w-id)
+        # Pass 2: convert each group, share S_g for w1/w3 pairs
         expert_count = 0
+
+        # Group expert_pairs by expert prefix (sans w-id)
+        # base = e.g. "layers.30.ffn.experts.0.w1"
+        # expert_prefix = "layers.30.ffn.experts.0", w_id = "w1"
+        from collections import defaultdict
+        by_expert = defaultdict(dict)  # expert_prefix -> {w_id: (wk, sk)}
         for base, (wk, sk) in expert_pairs.items():
             if wk is None or sk is None:
-                print(f"{log_prefix}WARN: incomplete expert pair at {base}: weight={wk} scale={sk}", file=sys.stderr)
+                print(f"{log_prefix}WARN: incomplete expert pair at {base}", file=sys.stderr)
                 if wk: new_tensors[wk] = f.get_tensor(wk)
                 if sk: new_tensors[sk] = f.get_tensor(sk)
                 continue
-            w = f.get_tensor(wk)
-            s = f.get_tensor(sk)
-            # Safetensors loads I8 dtype as torch.int8 (signed). Bit ops
-            # like (x >> 4) on signed int8 do arithmetic (sign-extending)
-            # shifts, which destroys FP4 nibbles in bytes with bit 7 set.
-            # View as uint8 before passing to the math.
-            if w.dtype == torch.int8:
-                w = w.view(torch.uint8)
-            # Same fix for E8M0 scales (safetensors loads as float8_e8m0fnu).
-            if s.dtype == torch.float8_e8m0fnu:
-                s = s.view(torch.uint8)
-            new_w, new_s, s_g = convert_expert_mxfp4_to_nvfp4(
-                w, s, device, fp4_mags, e4m3_sorted,
+            # base ends with .w{1,2,3}
+            expert_prefix, w_id = base.rsplit(".", 1)
+            by_expert[expert_prefix][w_id] = (wk, sk, base)
+
+        for expert_prefix, w_dict in by_expert.items():
+            # Convert w1, w3 together (shared S_g), then w2 alone
+            converted = {}  # w_id -> (new_w, new_s, raw_max_amax)
+            for w_id in ("w1", "w2", "w3"):
+                if w_id not in w_dict:
+                    continue
+                wk, sk, base = w_dict[w_id]
+                w = f.get_tensor(wk)
+                s = f.get_tensor(sk)
+                if w.dtype == torch.int8:
+                    w = w.view(torch.uint8)
+                if s.dtype == torch.float8_e8m0fnu:
+                    s = s.view(torch.uint8)
+                # Phase 1: compute the per-tensor amax (don't quantize yet)
+                # Quick dequant to get amax — same math as inside convert_expert
+                w_dev = w.to(device)
+                s_dev = s.to(device)
+                fp4_unpacked = fp4_unpack_to_float(w_dev, fp4_mags)  # [out, in]
+                src_scales = e8m0_decode(s_dev)
+                src_unpacked = fp4_unpacked * src_scales.repeat_interleave(32, dim=1)
+                amax = float(src_unpacked.abs().max().item())
+                converted[w_id] = (wk, sk, base, w, s, amax)
+
+            # Shared S_g for w1+w3
+            w1w3_amax = max(
+                converted.get("w1", (None,)*6)[5] if "w1" in converted else 0.0,
+                converted.get("w3", (None,)*6)[5] if "w3" in converted else 0.0,
             )
-            new_tensors[wk] = new_w
-            new_tensors[sk] = new_s
-            # Store per-tensor global scale as a sidecar BF16 scalar
-            new_tensors[f"{base}.weight_scale_2"] = torch.tensor([s_g], dtype=torch.float32)
-            expert_count += 1
+            s_g_w1w3 = w1w3_amax / (FP4_MAX * E4M3_MAX) if w1w3_amax > 0 else 1.0
+
+            # Independent S_g for w2
+            s_g_w2 = (converted["w2"][5] / (FP4_MAX * E4M3_MAX)
+                      if "w2" in converted and converted["w2"][5] > 0 else 1.0)
+
+            for w_id, (wk, sk, base, w, s, amax) in converted.items():
+                forced_s_g = s_g_w1w3 if w_id in ("w1", "w3") else s_g_w2
+                new_w, new_s, s_g_actual = convert_expert_mxfp4_to_nvfp4(
+                    w, s, device, fp4_mags, e4m3_sorted, forced_s_g=forced_s_g,
+                )
+                new_tensors[wk] = new_w
+                new_tensors[sk] = new_s
+                # weight_scale_2: per-tensor FP32 global scale
+                new_tensors[f"{base}.weight_scale_2"] = torch.tensor([s_g_actual], dtype=torch.float32)
+                # input_scale: dynamic activation quant — value 1.0
+                # (TRTLLM expects this param; without it process_weights_after_loading
+                # multiplies w13_weight_scale_2 by uninitialized memory.)
+                new_tensors[f"{base}.input_scale"] = torch.tensor([1.0], dtype=torch.float32)
+                expert_count += 1
 
         # Dequantize MTP e_proj/h_proj FP8 → BF16
         mtp_eh_count = 0
