@@ -349,6 +349,15 @@ def convert_shard(
                 continue
             w = f.get_tensor(wk)
             s = f.get_tensor(sk)
+            # Safetensors loads I8 dtype as torch.int8 (signed). Bit ops
+            # like (x >> 4) on signed int8 do arithmetic (sign-extending)
+            # shifts, which destroys FP4 nibbles in bytes with bit 7 set.
+            # View as uint8 before passing to the math.
+            if w.dtype == torch.int8:
+                w = w.view(torch.uint8)
+            # Same fix for E8M0 scales (safetensors loads as float8_e8m0fnu).
+            if s.dtype == torch.float8_e8m0fnu:
+                s = s.view(torch.uint8)
             new_w, new_s, s_g = convert_expert_mxfp4_to_nvfp4(
                 w, s, device, fp4_mags, e4m3_sorted,
             )
