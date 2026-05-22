@@ -136,7 +136,7 @@ async def run_gsm8k(args) -> dict:
     from datasets import load_dataset
 
     print(f"Loading GSM8K test...", file=sys.stderr)
-    ds = load_dataset("gsm8k", "main", split="test")
+    ds = load_dataset("openai/gsm8k", "main", split="test")
     print(f"  {len(ds)} problems", file=sys.stderr)
 
     if args.limit:
