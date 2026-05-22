@@ -45,17 +45,29 @@ export CUDA_HOME=/usr/local/cuda
     return 1
 }
 
-# ---- A: eager mode ----
-run_serve "eager" "--enforce-eager"
-/opt/pytorch/bin/python /tmp/bench_v4_pro.py latency \
-    --base-url http://localhost:8089 --model "$MODEL" \
-    --label "nvfp4_eager_ab" --n 10 --max-tokens 128 --output docs/benchmarks/latency_nvfp4_eager_ab_$(date -u +%Y_%m_%d).json
+SPEC_CFG='--speculative-config {"method":"mtp","num_speculative_tokens":1}'
 
-# ---- B: cuda-graph mode ----
-run_serve "graph" ""
+# ---- A: eager mode + MTP ----
+run_serve "eager_mtp" "--enforce-eager $SPEC_CFG"
 /opt/pytorch/bin/python /tmp/bench_v4_pro.py latency \
     --base-url http://localhost:8089 --model "$MODEL" \
-    --label "nvfp4_graph_ab" --n 10 --max-tokens 128 --output docs/benchmarks/latency_nvfp4_graph_ab_$(date -u +%Y_%m_%d).json
+    --label "nvfp4_eager_mtp_ab" --n 10 --max-tokens 128 \
+    --output docs/benchmarks/latency_nvfp4_eager_mtp_ab_$(date -u +%Y_%m_%d).json
+/opt/pytorch/bin/python /tmp/bench_v4_pro.py mtp \
+    --base-url http://localhost:8089 --model "$MODEL" \
+    --label "nvfp4_eager_mtp_ab" \
+    --output docs/benchmarks/mtp_nvfp4_eager_mtp_ab_$(date -u +%Y_%m_%d).json
+
+# ---- B: cuda-graph mode + MTP ----
+run_serve "graph_mtp" "$SPEC_CFG"
+/opt/pytorch/bin/python /tmp/bench_v4_pro.py latency \
+    --base-url http://localhost:8089 --model "$MODEL" \
+    --label "nvfp4_graph_mtp_ab" --n 10 --max-tokens 128 \
+    --output docs/benchmarks/latency_nvfp4_graph_mtp_ab_$(date -u +%Y_%m_%d).json
+/opt/pytorch/bin/python /tmp/bench_v4_pro.py mtp \
+    --base-url http://localhost:8089 --model "$MODEL" \
+    --label "nvfp4_graph_mtp_ab" \
+    --output docs/benchmarks/mtp_nvfp4_graph_mtp_ab_$(date -u +%Y_%m_%d).json
 
 echo "==== A/B DONE ===="
 echo "compare:"
