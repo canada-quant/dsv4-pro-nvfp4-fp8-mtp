@@ -1,8 +1,8 @@
 diff --git a/vllm/models/deepseek_v4/attention.py b/vllm/models/deepseek_v4/attention.py
-index b773f9cbbc..45e60bd5ac 100644
+index b773f9cbbc..643b336d06 100644
 --- a/vllm/models/deepseek_v4/attention.py
 +++ b/vllm/models/deepseek_v4/attention.py
-@@ -187,6 +187,13 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
+@@ -187,6 +187,17 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
  
          self.kv_norm = mla_modules.kv_norm
          self.wo_a = mla_modules.wo_a
@@ -13,10 +13,14 @@ index b773f9cbbc..45e60bd5ac 100644
 +            not hasattr(mla_modules.wo_a, 'weight_scale_inv')
 +            and not hasattr(mla_modules.wo_a, 'weight_scale')
 +        )
++        # Cache which scale attr is present so torch.compile can resolve
++        # the branch at trace time. The `or` operator on tensor values
++        # triggers data-dependent branching in dynamo.
++        self._wo_a_uses_inv_scale = hasattr(mla_modules.wo_a, 'weight_scale_inv')
  
          self._wo_a_act_quant = QuantFP8(
              static=False,
-@@ -306,7 +313,12 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
+@@ -306,7 +317,12 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
          o = o_padded[:, : self.n_local_heads, :]
  
          # Keep ROCm on the BF16 reference wo_a path util kernel ready.
@@ -30,16 +34,18 @@ index b773f9cbbc..45e60bd5ac 100644
              z = rocm_inv_rope_einsum(
                  self.rotary_emb,
                  o,
-@@ -331,7 +343,7 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
+@@ -331,7 +347,9 @@ class DeepseekV4MultiHeadLatentAttentionWrapper(PluggableLayer):
          )
  
          wo_a_fp8 = self.wo_a.weight
 -        wo_a_scale = self.wo_a.weight_scale_inv
-+        wo_a_scale = getattr(self.wo_a, "weight_scale_inv", None) or self.wo_a.weight_scale
++        # Use the init-cached flag (not `or`/`getattr` on tensor) so torch
++        # dynamo can resolve the branch at trace time.
++        wo_a_scale = self.wo_a.weight_scale_inv if self._wo_a_uses_inv_scale else self.wo_a.weight_scale
  
          z = torch.empty(
              (num_tokens, self.n_local_groups, self.o_lora_rank),
-@@ -1186,3 +1198,4 @@ class DeepseekV4Indexer(nn.Module):
+@@ -1186,3 +1204,4 @@ class DeepseekV4Indexer(nn.Module):
              use_fp4=self.use_fp4_kv,
          )
          return self.indexer_op(hidden_states, q_quant, k, weights)

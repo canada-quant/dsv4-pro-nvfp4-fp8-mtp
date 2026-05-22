@@ -1,5 +1,5 @@
 diff --git a/vllm/models/deepseek_v4/nvidia/mtp.py b/vllm/models/deepseek_v4/nvidia/mtp.py
-index 071abe2f4a..af7f8d471c 100644
+index 071abe2f4a..49b2a60a96 100644
 --- a/vllm/models/deepseek_v4/nvidia/mtp.py
 +++ b/vllm/models/deepseek_v4/nvidia/mtp.py
 @@ -58,6 +58,78 @@ logger = init_logger(__name__)
@@ -107,3 +107,41 @@ index 071abe2f4a..af7f8d471c 100644
          self.rms_norm_eps = config.rms_norm_eps
  
          self.enorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+@@ -378,12 +467,31 @@ class DeepSeekV4MTP(nn.Module):
+             if spec_layer != self.model.mtp_start_layer_idx and ".layers" not in name:
+                 continue
+             if name.endswith(".scale"):
+-                suffix = (
+-                    expert_scale_suffix
+-                    if _EXPERT_SCALE_RE.search(name)
+-                    else ".weight_scale_inv"
+-                )
+-                name = name.removesuffix(".scale") + suffix
++                # Resolve `.scale` to whichever scale suffix the layer's
++                # quant method actually registered. Experts use
++                # expert_scale_suffix (mxfp4: weight_scale; fp8_block:
++                # weight_scale_inv). Non-MoE layers default to
++                # weight_scale_inv (FP8 block-quant convention) but some
++                # FP8-quantized non-MoE layers (notably MTP's e_proj /
++                # h_proj, which are ReplicatedLinear with FP8 block-quant)
++                # register weight_scale instead. Also some weights live
++                # under .mtp_block. rather than directly under the spec
++                # layer; try both.
++                base = name.removesuffix(".scale")
++                is_expert = bool(_EXPERT_SCALE_RE.search(name))
++                primary_suffix = expert_scale_suffix if is_expert else ".weight_scale_inv"
++                candidates = [base + primary_suffix]
++                if not is_expert:
++                    candidates.append(base + ".weight_scale")
++                    if ".mtp_block." not in base:
++                        mtp_block_base = base.replace(
++                            f"model.layers.{spec_layer}",
++                            f"model.layers.{spec_layer}.mtp_block",
++                        )
++                        candidates.append(mtp_block_base + primary_suffix)
++                        candidates.append(mtp_block_base + ".weight_scale")
++                resolved = next((c for c in candidates if c in params_dict), candidates[0])
++                name = resolved
+             for param_name, weight_name, shard_id in stacked_params_mapping:
+                 # Skip non-stacked layers and experts (experts handled below).
+                 if ".experts." in name:
