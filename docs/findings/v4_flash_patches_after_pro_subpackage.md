@@ -347,15 +347,39 @@ Both fixes are in
 `scripts/install_vllm_with_patches.sh` so future re-runs handle them
 automatically.
 
-## Outstanding for step 3 close-out
+## Step 3 close-out (complete)
 
-- [ ] Build completion (running as PID 435754 on box, log at
-      `/tmp/vllm_rebuild3.log`)
-- [ ] Import smoke: `python -c "from vllm.models.deepseek_v4 import
-      quant_config, compressor, attention; from vllm.model_executor.layers
-      import mhc; print('ok')"`
-- [ ] Push the updated install_vllm_with_patches.sh + VERSIONS.md +
-      patches/*.diff to this repo
-- [ ] Final report-back to supervisor before step 4 (864.7 GB
-      native MXFP4 source download)
+- [x] **Build completed** at ~22:40 elapsed (longer than the 12–20 min
+      estimate; sm_103a ptxas on individual kernels is slow). PID 435754
+      exited cleanly with status `done`.
+- [x] **vLLM version after install**:
+      `0.21.1rc1.dev196+g0a78a466d` (was `dev164+gd05d52059` —
+      cleanly uninstalled). Replaces the V4-Flash venv state with the
+      new branch state in-place.
+- [x] **Import smoke passed**: all V4-Pro subpackage modules import
+      cleanly:
+      ```
+      vllm.models.deepseek_v4.quant_config
+      vllm.models.deepseek_v4.compressor
+      vllm.models.deepseek_v4.attention
+      vllm.models.deepseek_v4.nvidia.model
+      vllm.models.deepseek_v4.nvidia.mtp
+      vllm.model_executor.layers.mhc (HCHeadOp, MHCFusedPostPreOp,
+        MHCPostOp, MHCPreOp, mhc_kernels)
+      ```
+- [x] **All 4 patches verified in the loaded code** (via
+      `inspect.getsource`):
+      - PR #43248 — `is_static_input_scheme = bool(...)` at ≥2 sites
+      - PR #43288 — `_qc.get("scale_fmt"` defensive read
+      - PR #43290 — `getattr(self.wo_a, "weight_scale_inv"` fallback
+      - PR #43319 — `_mtp_block_is_quantized_on_disk` function
+- [x] `scripts/install_vllm_with_patches.sh` rewritten for V4-Pro
+      with pinned upstream SHA `39910f2b25`, setuptools-rust + rustup
+      auto-install, cmake-cache cleanup, and patches/*.diff fetched
+      from this repo.
+- [x] `patches/VERSIONS.md` updated for V4-Pro state with PR #42209
+      noted as upstream NVFP4 work.
+- [ ] **STOPPING for supervisor report-back before step 4** (864.7 GB
+      native MXFP4 source download). Step 4 is mechanical per
+      supervisor's framing but requires explicit go before kicking off.
 
