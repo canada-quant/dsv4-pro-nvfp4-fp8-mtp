@@ -329,7 +329,9 @@ async def run_aime(args) -> dict:
 # ---------- Latency ----------
 
 async def run_latency(args) -> dict:
-    """Single-prompt decode latency at concurrency=1."""
+    """Decode latency probe. Sequential when --concurrency=1, dispatches all
+    prompts concurrently via asyncio.gather when --concurrency>1 — in the
+    batched case also reports aggregate wall-clock throughput."""
     prompts = [
         "Briefly explain what a black hole is.",
         "Translate 'good morning' into Japanese and Spanish.",
@@ -339,29 +341,49 @@ async def run_latency(args) -> dict:
     ] * (args.n // 5 + 1)
     prompts = prompts[: args.n]
 
-    timeout = aiohttp.ClientTimeout(total=120)
+    timeout = aiohttp.ClientTimeout(total=600)
     rows = []
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        for i, p in enumerate(prompts):
-            res = await chat_complete(
-                session, args.base_url, args.model,
-                messages=[{"role": "user", "content": p}],
-                max_tokens=args.max_tokens, temperature=0.0,
-            )
-            if res.finish_reason in ("stop", "length") and res.completion_tokens > 0:
-                tokens_per_sec = res.completion_tokens / res.elapsed_s if res.elapsed_s > 0 else 0
-                rows.append({
-                    "i": i, "elapsed_s": res.elapsed_s,
-                    "completion_tokens": res.completion_tokens,
-                    "tokens_per_sec": tokens_per_sec,
-                })
-                print(f"  [{i+1:>3}/{len(prompts)}] {res.elapsed_s:.3f}s, {res.completion_tokens} tok, {tokens_per_sec:.1f} tok/s", file=sys.stderr)
+    wall_start = time.time()
 
+    async def one(session, i, p):
+        res = await chat_complete(
+            session, args.base_url, args.model,
+            messages=[{"role": "user", "content": p}],
+            max_tokens=args.max_tokens, temperature=0.0,
+        )
+        if res.finish_reason in ("stop", "length") and res.completion_tokens > 0:
+            tokens_per_sec = res.completion_tokens / res.elapsed_s if res.elapsed_s > 0 else 0
+            row = {
+                "i": i, "elapsed_s": res.elapsed_s,
+                "completion_tokens": res.completion_tokens,
+                "tokens_per_sec": tokens_per_sec,
+            }
+            print(f"  [{i+1:>3}/{len(prompts)}] {res.elapsed_s:.3f}s, {res.completion_tokens} tok, {tokens_per_sec:.1f} tok/s", file=sys.stderr)
+            return row
+        return None
+
+    connector = aiohttp.TCPConnector(limit=max(args.concurrency, 1))
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        if args.concurrency <= 1:
+            for i, p in enumerate(prompts):
+                r = await one(session, i, p)
+                if r is not None:
+                    rows.append(r)
+        else:
+            results = await asyncio.gather(
+                *(one(session, i, p) for i, p in enumerate(prompts))
+            )
+            rows = [r for r in results if r is not None]
+
+    wall_total = time.time() - wall_start
     elapsed = [r["elapsed_s"] for r in rows]
     tps = [r["tokens_per_sec"] for r in rows]
+    total_completion = sum(r["completion_tokens"] for r in rows)
+    aggregate_tps = total_completion / wall_total if wall_total > 0 else 0
     return {
         "benchmark": "latency",
         "n": len(rows),
+        "concurrency": args.concurrency,
         "elapsed_s_p50": float(statistics.median(elapsed)) if elapsed else 0,
         "elapsed_s_p95": float(statistics.quantiles(elapsed, n=20)[-1]) if len(elapsed) >= 20 else 0,
         "elapsed_s_mean": float(statistics.mean(elapsed)) if elapsed else 0,
@@ -369,6 +391,9 @@ async def run_latency(args) -> dict:
         "tokens_per_sec_p50": float(statistics.median(tps)) if tps else 0,
         "tokens_per_sec_p95": float(statistics.quantiles(tps, n=20)[-1]) if len(tps) >= 20 else 0,
         "tokens_per_sec_mean": float(statistics.mean(tps)) if tps else 0,
+        "aggregate_tps": aggregate_tps,
+        "wall_total_s": wall_total,
+        "total_completion_tokens": total_completion,
         "rows": rows,
     }
 
@@ -399,15 +424,17 @@ async def run_mtp(args) -> dict:
             metrics_after = await r.text()
 
     def parse(metric_name: str, text: str) -> float:
+        # Sum across all engine="<n>" labels (DP=N exposes one counter per rank).
+        total = 0.0
         for line in text.splitlines():
-            if line.startswith(metric_name) and not line.startswith(f"# "):
+            if line.startswith(metric_name) and not line.startswith("# "):
                 parts = line.split()
                 if len(parts) >= 2:
                     try:
-                        return float(parts[-1])
+                        total += float(parts[-1])
                     except ValueError:
                         pass
-        return 0.0
+        return total
 
     accepted_before = parse("vllm:spec_decode_num_accepted_tokens_total", metrics_before)
     accepted_after = parse("vllm:spec_decode_num_accepted_tokens_total", metrics_after)

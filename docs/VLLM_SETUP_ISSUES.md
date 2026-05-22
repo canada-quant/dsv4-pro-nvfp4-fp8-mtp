@@ -1,10 +1,22 @@
-# vLLM setup issues + the 5 patches needed to serve this artifact
+# vLLM setup issues + the 4 patches needed to serve this artifact
 
-Comprehensive list of every gotcha encountered bringing this artifact up on vLLM mainline, plus the exact diff for each local patch (with corresponding upstream PR where applicable).
+Comprehensive list of every gotcha encountered bringing this artifact up on vLLM mainline, plus the exact diff for each local patch (with corresponding upstream PR).
 
-## The 5 local patches
+## V4-Pro-specific findings (new since V4-Flash predecessor)
 
-Until upstream merges, you'll need these applied to your local vLLM checkout. The first 4 are already filed as PRs against `vllm-project/vllm`; the 5th is being prepared.
+These items are V4-Pro-specific and not in the V4-Flash predecessor's setup-issues doc:
+
+1. **`deep_gemm_mega_moe` does not dispatch NVFP4 in current mainline**. Loading our NVFP4 artifact with `--moe-backend deep_gemm_mega_moe` raises `KeyError: 'layers.0.ffn.experts.w13_input_scale'`. The mega-kernel path expects fused-name MoE parameters (one tensor for all experts), but NVFP4 ModelOpt layout uses per-expert names. Use `--moe-backend flashinfer_trtllm` for NVFP4 artifacts. Full repro and discussion in [`findings/backend_format_matrix.md`](findings/backend_format_matrix.md). vLLM issue to be filed.
+
+2. **`mtp.0.{e_proj, h_proj}` stored as BF16 in this artifact** (not native FP8). `ReplicatedLinear + Fp8Config` in vLLM mainline does not register `weight_scale_inv` for these two modules in a way the MTP loader can resolve — loading the native FP8 versions produces `KeyError: 'model.layers.61.e_proj.weight_scale_inv'`. We sidestep at conversion time by dequantizing to BF16. Full rationale in [`findings/mtp_eproj_hproj_workaround.md`](findings/mtp_eproj_hproj_workaround.md). Patch #43319 below is our partial fix in the loader; the proper root-cause fix is in core `ReplicatedLinear` and remains to be filed.
+
+3. **MTP acceptance is structurally low on V4-Pro**. We measure 1.82% per-token (accept length 1.036) at MTP n=2. Consistent with LMSYS day-zero accept length ~1.19 on the partner-blessed deployment and with vLLM upstream classifying V4-Pro MTP as `opt_in_features`, not default. Documented in [`findings/upstream_mtp_classification.md`](findings/upstream_mtp_classification.md). Not a CQL/conversion issue.
+
+4. **`--moe-backend flashinfer_trtllm` is the only path for NVFP4 today**. We measured native MXFP4 throughput on both `deep_gemm_mega_moe` (the upstream-recipe default) and `flashinfer_trtllm` — `deep_gemm` is ~4% faster on native MXFP4. So the comparison NVFP4+flashinfer vs MXFP4+deep_gemm is each format on its preferred backend, the honest like-for-like.
+
+## The 4 local patches
+
+Until upstream merges, you'll need these applied to your local vLLM checkout. All 4 are filed as PRs against `vllm-project/vllm`. PR #42209 (NVFP4 MoE support for DSV4 by sychen52) merged 2026-05-22 and is now in mainline — it's a dependency for serving our artifact at all, but no longer requires a cherry-pick.
 
 ### Patch 1 — `bool()` wrap on `is_static_input_scheme` ([PR #43248](https://github.com/vllm-project/vllm/pull/43248))
 

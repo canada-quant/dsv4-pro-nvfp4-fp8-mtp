@@ -1,0 +1,141 @@
+{
+  "benchmark": "latency",
+  "n": 20,
+  "elapsed_s_p50": 1.374281883239746,
+  "elapsed_s_p95": 4.077695417404175,
+  "elapsed_s_mean": 1.4071762323379517,
+  "elapsed_s_std": 0.8981510789984078,
+  "tokens_per_sec_p50": 66.94409818290781,
+  "tokens_per_sec_p95": 67.92554604862423,
+  "tokens_per_sec_mean": 62.570711903904105,
+  "rows": [
+    {
+      "i": 0,
+      "elapsed_s": 4.1924073696136475,
+      "completion_tokens": 92,
+      "tokens_per_sec": 21.94443237239092
+    },
+    {
+      "i": 1,
+      "elapsed_s": 0.7964966297149658,
+      "completion_tokens": 51,
+      "tokens_per_sec": 64.03040276297321
+    },
+    {
+      "i": 2,
+      "elapsed_s": 1.8981683254241943,
+      "completion_tokens": 128,
+      "tokens_per_sec": 67.43342952548485
+    },
+    {
+      "i": 3,
+      "elapsed_s": 1.8844046592712402,
+      "completion_tokens": 128,
+      "tokens_per_sec": 67.92596238299565
+    },
+    {
+      "i": 4,
+      "elapsed_s": 0.38126349449157715,
+      "completion_tokens": 22,
+      "tokens_per_sec": 57.70287561713051
+    },
+    {
+      "i": 5,
+      "elapsed_s": 1.375403881072998,
+      "completion_tokens": 92,
+      "tokens_per_sec": 66.88944335988623
+    },
+    {
+      "i": 6,
+      "elapsed_s": 0.7948992252349854,
+      "completion_tokens": 51,
+      "tokens_per_sec": 64.15907624632992
+    },
+    {
+      "i": 7,
+      "elapsed_s": 1.891556739807129,
+      "completion_tokens": 128,
+      "tokens_per_sec": 67.66913056652555
+    },
+    {
+      "i": 8,
+      "elapsed_s": 1.885746955871582,
+      "completion_tokens": 128,
+      "tokens_per_sec": 67.87761189349983
+    },
+    {
+      "i": 9,
+      "elapsed_s": 0.3838157653808594,
+      "completion_tokens": 22,
+      "tokens_per_sec": 57.31916712219848
+    },
+    {
+      "i": 10,
+      "elapsed_s": 1.3731293678283691,
+      "completion_tokens": 92,
+      "tokens_per_sec": 67.0002420423793
+    },
+    {
+      "i": 11,
+      "elapsed_s": 0.7931568622589111,
+      "completion_tokens": 51,
+      "tokens_per_sec": 64.30001734430182
+    },
+    {
+      "i": 12,
+      "elapsed_s": 1.893322229385376,
+      "completion_tokens": 128,
+      "tokens_per_sec": 67.60603029604331
+    },
+    {
+      "i": 13,
+      "elapsed_s": 1.8849072456359863,
+      "completion_tokens": 128,
+      "tokens_per_sec": 67.90785079549713
+    },
+    {
+      "i": 14,
+      "elapsed_s": 0.38246607780456543,
+      "completion_tokens": 22,
+      "tokens_per_sec": 57.52144118580283
+    },
+    {
+      "i": 15,
+      "elapsed_s": 1.3731598854064941,
+      "completion_tokens": 92,
+      "tokens_per_sec": 66.99875300592939
+    },
+    {
+      "i": 16,
+      "elapsed_s": 0.7952494621276855,
+      "completion_tokens": 51,
+      "tokens_per_sec": 64.13081986066332
+    },
+    {
+      "i": 17,
+      "elapsed_s": 1.8975536823272705,
+      "completion_tokens": 128,
+      "tokens_per_sec": 67.45527211805324
+    },
+    {
+      "i": 18,
+      "elapsed_s": 1.8846356868743896,
+      "completion_tokens": 128,
+      "tokens_per_sec": 67.91763569556727
+    },
+    {
+      "i": 19,
+      "elapsed_s": 0.38178110122680664,
+      "completion_tokens": 22,
+      "tokens_per_sec": 57.62464388442933
+    }
+  ],
+  "meta": {
+    "model": "/opt/dlami/nvme/weights/v4-pro-native-mxfp4-mtp",
+    "base_url": "http://localhost:8089",
+    "max_tokens": 128,
+    "concurrency": 8,
+    "label": "D_mxfp4_flashinfer",
+    "timestamp": "2026-05-22T20:40:47.039750Z"
+  }
+}

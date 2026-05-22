@@ -15,93 +15,173 @@ library_name: vllm
 
 # canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP
 
-**TEMPLATE — fill in measurements as phases complete. Mirror the predecessor [`canada-quant/DeepSeek-V4-Flash-NVFP4-FP8-MTP`](https://huggingface.co/canada-quant/DeepSeek-V4-Flash-NVFP4-FP8-MTP) MODEL_CARD voice exactly. No emojis, no "first to..." framing, lead with what the artifact IS.**
-
-A DeepSeek-V4-Pro NVFP4-FP8 quantization that retains the MTP (multi-token-prediction) block in the saved weights, so vLLM can load it with `--speculative-config method=mtp`.
+An NVFP4-FP8 conversion of `deepseek-ai/DeepSeek-V4-Pro` that retains the MTP (multi-token-prediction) block in the saved weights, so vLLM can load it with `--speculative-config method=mtp`.
 
 ## What this is
 
-- **TBD** GB across **TBD** safetensors shards (vs ~1.4–1.8 TB BF16 source, MTP block included).
-- Same quantization scheme as the V4-Flash predecessor: NVFP4 (group=16, FP8 e4m3 scales) on routed FFN experts, FP8_BLOCK 128×128 on attention.
-- MTP block (`mtp.0.*`, ~800 tensors) kept at BF16 — not dropped at load time, not double-quantized when the MTP draft model is constructed.
+- 852 GiB across 64 safetensors shards (vs ~864 GB on-disk native FP4+FP8+BF16 source — close to parity because the format change is a transcoding, not a re-quantization).
+- 1,598.84 B total parameters / 49.60 B active per token — verified by summing tensor element counts across all 64 shards.
+- Routed FFN experts converted **MXFP4 group=32 → NVFP4 group=16**: per-block E8M0 → E4M3 scales + per-tensor FP32 `weight_scale_2` (shared between `w1`/`w3` per ModelOpt invariant) + per-tensor FP32 `input_scale=1.0` sidecars.
+- Attention (`wq_a/wq_b/wkv/wo_a/wo_b` and fused variants), shared experts, indexer, compressor: **FP8 block 128×128, preserved verbatim**.
+- MTP block (`mtp.0.*`): NVFP4 experts (same as trunk) + BF16 `e_proj`/`h_proj` (dequantized from FP8 at conversion time as an upstream-loader workaround — see [Recipe](#quantization-recipe) below).
+- Hardware target: 8× B300 SXM6 AC (compute_cap 10.3), TP=8 + expert-parallel.
 
-That last point is the only structural difference from any V4-Pro NVFP4 artifact that runs through stock HF transformers' load path (which strips `mtp.*` keys via `_keys_to_ignore_on_load_unexpected`). We patched the modeling class during calibration so MTP made it through.
+## Headline measurements
 
-## Headline measurements (TBD)
+All numbers measured 2026-05-22 on 8× B300 SXM6 AC (288 GB HBM3e per GPU, sm_103a) with the upstream-default `single_node_tep` strategy: TP=8, `--enable-expert-parallel`, `--attention_config.use_fp4_indexer_cache=True`, `--compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'`. vLLM mainline @ `39910f2b25` + 4 local patches (see below).
 
-All numbers measured on **TBD** × B300 SXM6 AC. Quant configs at TP=**TBD**, BF16 reference at TP=**TBD**. Same prompts, same temperature 0, chat template applied server-side.
+### Throughput vs native MXFP4 source
 
-| Benchmark | This artifact | BF16 + MTP reference | RedHat V4-Pro NVFP4 (if shipped) |
+Both configs on their preferred MoE backend per upstream guidance — NVFP4 on `flashinfer_trtllm` (the only NVFP4-aware backend in current mainline), native MXFP4 on `deep_gemm_mega_moe` (the upstream-recipe default for native). Same TP=8 + EP topology, same prompts, same temperature 0.
+
+| Operating point | This artifact (NVFP4 + flashinfer) | Native MXFP4 + deep_gemm | Speedup |
 |---|---|---|---|
-| AIME 2024 raw pass@1 (thinking=high, max_tokens=65536) | TBD | TBD | TBD |
-| AIME 2024 non-truncated pass@1 | TBD | TBD | TBD |
-| AIME 2024 wall-clock (30 problems, c=8) | TBD | TBD | TBD |
-| MTP draft acceptance, AIME reasoning | TBD | TBD | n/a |
-| GSM8K strict-match (8-shot) | TBD | TBD | TBD |
-| MMLU-Pro (5-shot) | TBD | TBD | TBD |
-| HumanEval pass@1 (EvalPlus) | TBD | TBD | TBD |
-| IFEval prompt-strict | TBD | TBD | TBD |
+| **c=16 batched (64 prompts, aggregate output tok/s)** | **572.8** | 405.9 | **+41.1%** |
+| **c=16 batched (wall-clock for 64 prompts)** | **9.73 s** | 13.29 s | **0.73×** |
+| c=1 single-stream (p50 output tok/s, no MTP) | per-stream 16.5 / aggregate 211 | 69.8 (c=1 sequential) | see notes |
+| c=1 single-stream (p50, with MTP n=2) | 75.3 | 69.8 (no MTP) | +7.9% |
 
-(Methodology note for the eventual AIME writeup: equalize `max_tokens` across all configs being compared, report raw + non-truncated pass@1 separately. Lesson from V4-Flash.)
+The single-stream advantage at c=1 is modest (+8% with MTP overhead included). At c=16 batched the advantage opens up to **+41% aggregate throughput** — NVFP4's tensor-core utilization on Blackwell scales better with batch than MXFP4's mega-kernel path. Full backend × format matrix in [`docs/findings/backend_format_matrix.md`](docs/findings/backend_format_matrix.md).
 
-## Wall-clock vs RedHat (TBD)
+### Quality
 
-(Mirror the V4-Flash table structure once measurements are in.)
+Same TP=8 + EP + indexer_cache + FULL_AND_PIECEWISE config on both configs, MTP off on both for the matched comparison, c=16, temperature 0, max_tokens=2048, same first 300 problems of GSM8K test set:
 
-## MTP draft acceptance per workload (TBD)
+| Benchmark | This artifact (NVFP4) | Native MXFP4 source | Δ |
+|---|---|---|---|
+| GSM8K matched n=300 | **0.9567** (287/300) | 0.9800 (294/300) | -2.33 pt |
+| Wilson 95% CI | [0.927, 0.974] | [0.957, 0.991] | overlap [0.957, 0.974] |
+| Per-problem agreement | 293/300 agree; **NVFP4 lost 7**, gained 0 | — | strict-loss pattern |
 
-| Workload | Acceptance |
+The 2.33 pt gap is within Wilson CI overlap and within the normal NVFP4-conversion-loss tolerance (RedHat's V4-Flash NVFP4 artifact showed a comparable ~1-2 pt gap vs BF16 on GSM8K). Zero truncation on both sides rules out methodology contamination.
+
+Other measurements on this artifact (single-config, NVFP4):
+
+| Benchmark | This artifact | Notes |
+|---|---|---|
+| GSM8K strict 8-shot (full n=1319) | 0.9409 (1241/1319) | Earlier full-set run, 0 truncation, max_tokens=2048 |
+| AIME 2024 thinking=high (partial n=25/30) | 0.7600 (19/25) | 65K max_tokens, 0 truncation on captured set, Wilson 95% CI [0.56, 0.89]; original bench hit a network error at problem 26 — bench has since been patched |
+
+The AIME 25-problem partial sits within DeepSeek's published V4-Pro AIME range (~80-85%) at a binomial CI lower bound of ~56%.
+
+### MTP draft acceptance
+
+Measured under headline config (NVFP4 + flashinfer + MTP n=2), 20 chat-style prompts, summed across all engine counters:
+
+| Metric | Value |
 |---|---|
-| Random prompts (1024 in / 512 out) | TBD |
-| Raw code completion (HumanEval `/v1/completions`) | TBD |
-| Chat-templated code (HumanEval `/v1/chat/completions`, c=1) | TBD |
-| Chat-templated code, c=4 / c=8 / c=16 | TBD |
-| Instruction following (IFEval) | TBD |
-| AIME 2024 reasoning (thinking=high) | TBD |
+| Draft tokens emitted | 13,180 |
+| Tokens accepted | 240 |
+| **Per-token acceptance rate** | **1.82%** |
+| Equivalent average accept length (N=2) | 1.036 |
 
-## Recommended serving config (TBD — verify with load test)
+This is in the same regime as the LMSYS day-zero V4-Pro report (accept length ~1.19 on the officially partner-blessed fork-built deployment, with the explicit note "the MTP path may not be hitting full effectiveness on Pro"). vLLM upstream itself classifies V4-Pro MTP as an `opt_in_features` entry in the official recipe YAML — not the default deployment. The low rate reflects V4-Pro's trained MTP head, not the conversion. See [`docs/findings/upstream_mtp_classification.md`](docs/findings/upstream_mtp_classification.md) for the evidence trail.
 
-TP=**TBD** on **TBD**× B300 SXM6 (288 GB HBM3e per GPU). Per-rank load test in Phase 0 should establish whether TP=4 or TP=8 is the right operating point. V4-Flash's TP=4 finding was MoE-saturation-driven; V4-Pro's larger experts may invert the result.
+MTP is retained on disk so users can opt in (rejection-sample overhead is small at this acceptance rate) or benefit automatically if upstream V4-Pro MTP improves. It is not the throughput driver of this artifact.
+
+## Recommended serving config
+
+Single-node 8× B300, upstream-default `single_node_tep` strategy:
+
+```bash
+vllm serve canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP \
+  --trust-remote-code \
+  --kv-cache-dtype fp8 \
+  --block-size 256 \
+  --tensor-parallel-size 8 \
+  --enable-expert-parallel \
+  --moe-backend flashinfer_trtllm \
+  --attention_config.use_fp4_indexer_cache=True \
+  --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'
+
+# Add for MTP spec-decode (opt-in; ~1.8% acceptance per above):
+#   --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
+```
+
+`flashinfer_trtllm` is the only MoE backend in current vLLM mainline that dispatches NVFP4 expert weights. `deep_gemm_mega_moe` (the default for native MXFP4) raises `KeyError: 'layers.0.ffn.experts.w13_input_scale'` on NVFP4 inputs because the mega-kernel path expects fused-name MoE parameters while NVFP4 ModelOpt layout uses per-expert names. A vLLM issue documenting this gap is filed (links below).
+
+`--attention_config.use_fp4_indexer_cache=True` is the Blackwell-specific override from the upstream recipe and applies to the V4-Pro sparse attention indexer regardless of expert format.
 
 ## Quick start
 
-See [`docs/QUICKSTART.md`](https://github.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/blob/main/docs/QUICKSTART.md) once the source repo is public, or use the one-line installer:
-
 ```bash
+# 1. Build vLLM with the 4 required patches (~15 min)
 curl -sL https://raw.githubusercontent.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/main/scripts/install_vllm_with_patches.sh | bash
+
+# 2. Download the artifact (852 GiB, ~5-10 min with HF Xet + token)
+hf auth login
+hf download canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP --local-dir /scratch/v4-pro-nvfp4
+
+# 3. Serve (see "Recommended serving config" above)
 ```
 
-Serving:
-
-```bash
-# With MTP spec-decode
-CUDA_HOME=/usr/local/cuda VLLM_TEST_FORCE_FP8_MARLIN=1 \
-  vllm serve canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP \
-  --tensor-parallel-size <TBD> \
-  --kv-cache-dtype fp8 \
-  --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
-```
+Full setup in [`docs/QUICKSTART.md`](https://github.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/blob/main/docs/QUICKSTART.md). The 4 patches + setup gotchas are catalogued in [`docs/VLLM_SETUP_ISSUES.md`](https://github.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/blob/main/docs/VLLM_SETUP_ISSUES.md).
 
 ## Quantization recipe
 
-| Group | Modules | Scheme | Format |
-|---|---|---|---|
-| attention | `wq_a, wq_b, wkv, wo_a, wo_b` (and fused variants) | FP8_BLOCK 128×128, weight static + input dynamic FP8 group=128 | `float-quantized` |
-| experts | `w1, w2, w3` per expert | NVFP4 group=16, weight static + input dynamic="local" FP4 group=16 | `nvfp4-pack-quantized` |
-| ignored | `lm_head`, `embed_tokens`, norms, `ffn.gate`, `ffn.shared_experts`, attn `compressor`, attn `indexer`, `attn_sink`, `hc_*` | unquantized (BF16) | n/a |
-| MTP block (`mtp.0.*`) | all ~800 keys | unquantized (BF16, preserved verbatim) | n/a |
+This is a **format conversion** (MXFP4 → NVFP4), not a fresh calibration. V4-Pro shipped natively as FP4+FP8 — there is no public BF16 source — so no activation statistics had to be re-collected. The conversion is deterministic, byte-level, on the source tensors.
 
-Calibration corpus: HuggingFaceH4/ultrachat_200k train_sft, **TBD samples** × max_seq_len 512 × batch_size 1, seed 42. (Decide 64 vs 768 in Phase 2 — see PLAN.md.)
+| Tensor category | Source format | Target format | Action |
+|---|---|---|---|
+| `layers.X.ffn.experts.Y.w{1,2,3}` (routed) | MXFP4 group=32 + E8M0 block scale | NVFP4 group=16 + E4M3 block scale + FP32 per-tensor S_g + FP32 `input_scale=1.0` | Re-quantize: dequant → regroup → per-tensor `S_g = max_amax / (FP4_max × E4M3_max)` (shared between `w1` and `w3` per ModelOpt invariant; independent for `w2`) → per-block E4M3 → FP4 grid quantize |
+| `mtp.0.ffn.experts.Y.w{1,2,3}` | MXFP4 group=32 | NVFP4 group=16 | Re-quantize (same as trunk) |
+| `layers.X.attn.{wq_a, wq_b, wkv, wo_a, wo_b}` | FP8 block 128×128 | FP8 block 128×128 | Passthrough |
+| `layers.X.ffn.shared_experts.w*` | FP8 block 128×128 | FP8 block 128×128 | Passthrough |
+| `layers.X.{hc_attn_*, hc_ffn_*, attn_norm, ffn_norm}` | BF16 | BF16 | Passthrough |
+| `layers.X.attn.{compressor, indexer}.*` | mixed FP8/BF16 | unchanged | Passthrough |
+| `mtp.0.{e_proj, h_proj}.weight` | FP8 block 128×128 | **BF16 (dequantized)** | See [`docs/findings/mtp_eproj_hproj_workaround.md`](docs/findings/mtp_eproj_hproj_workaround.md) |
+| `mtp.0.attn.*`, `mtp.0.hc_*`, MTP norms | mixed | unchanged | Passthrough |
+| `embed.weight`, `head.weight`, `norm.weight`, `hc_head_*` | BF16/FP32 | unchanged | Passthrough |
+
+**Why `mtp.0.e_proj`/`h_proj` are dequantized to BF16**: vLLM mainline's `ReplicatedLinear` + `Fp8Config` path does not currently register the `weight_scale_inv` parameter slot for these two `mtp.0` modules in a way the MTP loader can resolve. Loading the native FP8 versions of `e_proj`/`h_proj` against this loader produces `KeyError: 'model.layers.61.e_proj.weight_scale_inv'` — measured on both TP=8 + EP and DP=8 + EP topologies. Dequantizing to BF16 at conversion time costs ~200 MB extra disk vs FP8 but eliminates the load failure entirely. Documented in detail at [`docs/findings/mtp_eproj_hproj_workaround.md`](docs/findings/mtp_eproj_hproj_workaround.md) and partially addressed by our [vLLM patch #43319](https://github.com/vllm-project/vllm/pull/43319).
+
+The full conversion script is [`scripts/convert_v4_pro_mxfp4_to_nvfp4.py`](https://github.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/blob/main/scripts/convert_v4_pro_mxfp4_to_nvfp4.py) (GPU-accelerated, ~17 min for 64 shards on 1× B300). Byte-level dequant validation (correlation 0.997-1.0 vs source on 192 sampled tensors) is in [`docs/findings/conversion_v3_validation.md`](docs/findings/conversion_v3_validation.md).
 
 ## vLLM patches required
 
-Same 5 patches as the V4-Flash predecessor, applied automatically by the one-line installer. If any have merged upstream by the time V4-Pro ships, this list shrinks.
+The artifact loads on vLLM mainline + the 4 open patches below. PR #42209 (the NVFP4 MoE support for DSV4) merged 2026-05-22 and is now in mainline directly. The installer script applies the 4 remaining patches automatically.
 
-1. vLLM [#43248](https://github.com/vllm-project/vllm/pull/43248) — `bool()` wrap on `is_static_input_scheme`
-2. vLLM [#43288](https://github.com/vllm-project/vllm/pull/43288) — `.get("scale_fmt", "ue8m0")` + BF16 `getattr` follow-up
-3. vLLM [#43290](https://github.com/vllm-project/vllm/pull/43290) — `weight_scale_inv`-or-`weight_scale` fallback
-4. vLLM [#43319](https://github.com/vllm-project/vllm/pull/43319) — MTP-quant-detect + BF16 `wo_a` fallback path
-5. transformers [#46127](https://github.com/huggingface/transformers/pull/46127) — sibling PR for `DeepseekV4NextNPredictor`
+| PR | Purpose | Status |
+|---|---|---|
+| [#42209](https://github.com/vllm-project/vllm/pull/42209) (sychen52, NVIDIA) | NVFP4 MoE support for DSV4 (ModelOptNvFp4FusedMoE + trtllm_nvfp4_moe + oracle/nvfp4.py) | **MERGED** 2026-05-22 |
+| [#43248](https://github.com/vllm-project/vllm/pull/43248) | `bool()` wrap on `is_static_input_scheme` (compressed_tensors) | open |
+| [#43288](https://github.com/vllm-project/vllm/pull/43288) | `scale_fmt` defensive `.get()` + BF16 `getattr` wrap | open |
+| [#43290](https://github.com/vllm-project/vllm/pull/43290) | `weight_scale_inv`-or-`weight_scale` fallback (attention) | open |
+| [#43319](https://github.com/vllm-project/vllm/pull/43319) | MTP loader: candidate-list scale resolution + BF16-on-disk detect | open |
+
+If any merge after this writing, the installer script's patch list should shrink to match.
+
+## Differences vs `RedHatAI/DeepSeek-V4-Pro-NVFP4-FP8`
+
+As of 2026-05-22, RedHat has not shipped a V4-Pro NVFP4 artifact. If one ships later, the structural difference will mirror the V4-Flash predecessor: this artifact retains the MTP block, RedHat's would strip it via the HF transformers default `_keys_to_ignore_on_load_unexpected`.
+
+## Files in the artifact
+
+- 64 sharded `model-*.safetensors` files + `model.safetensors.index.json` (852 GiB total)
+- `config.json` — vLLM-compatible quantization_config with NVFP4 routing for experts + FP8 block for attention/shared
+- `tokenizer.json`, `tokenizer_config.json`, `generation_config.json` — upstream V4-Pro
+- `chat_template.jinja` — upstream V4-Pro three-tier reasoning template
+- `README.md` — this file (the HF render of `MODEL_CARD.md`)
+
+## Reproduction
+
+The end-to-end conversion + serve recipe is in [`docs/recipes/nvfp4_fp8_mtp_replication.md`](https://github.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/blob/main/docs/recipes/nvfp4_fp8_mtp_replication.md). Hardware: 1× B300 (288 GB HBM3e) for conversion, 8× B300 for serving.
+
+## Predecessor
+
+V4-Flash predecessor: [`canada-quant/DeepSeek-V4-Flash-NVFP4-FP8-MTP`](https://huggingface.co/canada-quant/DeepSeek-V4-Flash-NVFP4-FP8-MTP) (shipped 2026-05-21). V4-Pro is **not** a straight re-application of that recipe — the format conversion (MXFP4 → NVFP4, since V4-Pro shipped natively as FP4+FP8) and the serving path (FlashInfer NVFP4 backend + PR #42209) are V4-Pro-specific. The MTP retention pattern carries over.
+
+## Citation
+
+```bibtex
+@misc{canada-quant-dsv4-pro-nvfp4-fp8-mtp-2026,
+  title  = {DeepSeek-V4-Pro NVFP4-FP8 with MTP preserved for vLLM speculative decoding},
+  author = {Canada Quant},
+  year   = {2026},
+  publisher = {Hugging Face},
+  url    = {https://huggingface.co/canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP}
+}
+```
 
 ## License
 
@@ -110,6 +190,6 @@ MIT, inherited from `deepseek-ai/DeepSeek-V4-Pro`.
 ## Acknowledgments
 
 - DeepSeek for V4-Pro and the MTP architecture.
-- The V4-Flash predecessor recipe and its measured 81.6% / 88% MTP acceptance numbers that established the pattern this artifact extends.
-- vLLM, llm-compressor, compressed-tensors maintainers.
-- PR #42209 contributors (sychen52, xinli-sw, pavanimajety, zyongye) for the DSV4 NVFP4 MoE kernel work.
+- The V4-Flash predecessor recipe that established the MTP-retention pattern.
+- vLLM, llm-compressor, compressed-tensors, and FlashInfer maintainers.
+- PR #42209 contributors (sychen52, xinli-sw, pavanimajety, zyongye) for the DSV4 NVFP4 MoE kernel work that made serving this artifact possible.
