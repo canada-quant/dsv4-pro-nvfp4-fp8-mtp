@@ -355,7 +355,7 @@ def convert_shard(
             new_tensors[wk] = new_w
             new_tensors[sk] = new_s
             # Store per-tensor global scale as a sidecar BF16 scalar
-            new_tensors[f"{base}.global_scale"] = torch.tensor([s_g], dtype=torch.float32)
+            new_tensors[f"{base}.weight_scale_2"] = torch.tensor([s_g], dtype=torch.float32)
             expert_count += 1
 
         # Dequantize MTP e_proj/h_proj FP8 → BF16
@@ -497,20 +497,28 @@ def rewrite_config(src_dir: Path, out_dir: Path) -> None:
     """Update config.json to mark the artifact as NVFP4."""
     src_cfg = json.load((src_dir / "config.json").open())
     # Update quantization_config to reflect NVFP4 conversion
-    src_cfg["expert_dtype"] = "nvfp4"
+    # Keep expert_dtype="fp4" so vLLM's DeepseekV4FP8Config.get_quant_method
+    # still routes through the "fp4" branch, but set moe_quant_algo="NVFP4"
+    # to trigger ModelOptNvFp4FusedMoE (vLLM PR #42209). This is the upstream
+    # routing convention.
+    src_cfg["expert_dtype"] = "fp4"
     src_cfg["quantization_config"] = {
         "activation_scheme": "dynamic",
         "fmt": "e4m3",
         "quant_method": "fp8",
         "scale_fmt": "ue8m0",  # for FP8 attention; preserved as-is
         "weight_block_size": [128, 128],
+        # Triggers ModelOptNvFp4FusedMoE in vllm/models/deepseek_v4/quant_config.py
+        # per PR #42209 (https://github.com/vllm-project/vllm/pull/42209).
+        "moe_quant_algo": "NVFP4",
+        # Metadata for downstream readers
         "expert_format": {
             "name": "nvfp4",
             "weight_dtype": "fp4_e2m1",
             "weight_packing": "uint8_2_per_byte",
             "group_size": 16,
             "scale_dtype": "fp8_e4m3",
-            "global_scale_dtype": "fp32",
+            "weight_scale_2_dtype": "fp32",
         },
         "mtp_e_proj_h_proj_dequant": "bf16",
     }
