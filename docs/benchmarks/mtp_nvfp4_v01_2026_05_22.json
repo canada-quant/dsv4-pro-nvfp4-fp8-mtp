@@ -1,0 +1,17 @@
+{
+  "benchmark": "mtp",
+  "n_prompts": 20,
+  "drafts_emitted": 0.0,
+  "tokens_accepted": 0.0,
+  "acceptance_rate": 0.0,
+  "metrics_before_excerpt": "",
+  "metrics_after_excerpt": "",
+  "meta": {
+    "model": "/opt/dlami/nvme/weights/v4-pro-nvfp4-fp8-mtp",
+    "base_url": "http://localhost:8089",
+    "max_tokens": 2048,
+    "concurrency": 8,
+    "label": "nvfp4_v01",
+    "timestamp": "2026-05-22T17:18:16.324079Z"
+  }
+}
