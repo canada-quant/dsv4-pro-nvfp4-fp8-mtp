@@ -147,12 +147,13 @@ async def run_gsm8k(args) -> dict:
     connector = aiohttp.TCPConnector(limit=args.concurrency)
     rows: list[dict] = []
     correct = 0
+    sem = asyncio.Semaphore(args.concurrency)
 
-    async def process(i, row):
+    async def process(session, i, row):
         question = row["question"]
         gold = gsm8k_extract_gold(row["answer"])
         prompt = GSM8K_8SHOT_PROMPT.format(question=question)
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        async with sem:
             res = await chat_complete(
                 session, args.base_url, args.model,
                 messages=[{"role": "user", "content": prompt}],
@@ -169,23 +170,18 @@ async def run_gsm8k(args) -> dict:
             "text_head": res.text[:400],
         }
 
-    # Run in batches
-    sem = asyncio.Semaphore(args.concurrency)
-    async def with_sem(i, row):
-        async with sem:
-            return await process(i, row)
-
     t_start = time.time()
-    tasks = [asyncio.create_task(with_sem(i, ds[i])) for i in range(len(ds))]
-    for done_count, task in enumerate(asyncio.as_completed(tasks), 1):
-        r = await task
-        rows.append(r)
-        if r["ok"]:
-            correct += 1
-        if done_count % 25 == 0 or done_count == len(ds):
-            elapsed = time.time() - t_start
-            acc = correct / done_count
-            print(f"  [{done_count:>4}/{len(ds)}] acc={acc:.4f} ({correct}/{done_count}) elapsed={elapsed:.1f}s", file=sys.stderr)
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        tasks = [asyncio.create_task(process(session, i, ds[i])) for i in range(len(ds))]
+        for done_count, task in enumerate(asyncio.as_completed(tasks), 1):
+            r = await task
+            rows.append(r)
+            if r["ok"]:
+                correct += 1
+            if done_count % 25 == 0 or done_count == len(ds):
+                elapsed = time.time() - t_start
+                acc = correct / done_count
+                print(f"  [{done_count:>4}/{len(ds)}] acc={acc:.4f} ({correct}/{done_count}) elapsed={elapsed:.1f}s", file=sys.stderr)
 
     rows.sort(key=lambda r: r["i"])
     n = len(rows)
@@ -255,25 +251,24 @@ async def run_aime(args) -> dict:
     timeout = aiohttp.ClientTimeout(total=args.timeout)
     connector = aiohttp.TCPConnector(limit=args.concurrency)
     rows: list[dict] = []
+    sem = asyncio.Semaphore(args.concurrency)
 
-    async def process(i, row):
+    async def process(session, i, row):
         prob = row[prob_field]
         gold_raw = row.get(ans_field, "") if ans_field else ""
         gold = re.search(r"\d+", str(gold_raw))
         gold = gold.group(0) if gold else None
 
         messages = [{"role": "system", "content": SYS}, {"role": "user", "content": prob}]
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        async with sem:
             res = await chat_complete(
                 session, args.base_url, args.model,
                 messages=messages, max_tokens=args.max_tokens, temperature=0.0,
                 timeout=args.timeout,
             )
-        # Extract integer answer
         ans_match = re.search(r"Answer:\s*([-+]?\d+)", res.text)
         pred = ans_match.group(1) if ans_match else None
         if pred is None:
-            # Fallback: last 1-3 digit integer in response
             nums = re.findall(r"\b(\d{1,3})\b", res.text)
             pred = nums[-1] if nums else None
         ok = (pred is not None and gold is not None and int(pred) == int(gold))
@@ -285,17 +280,13 @@ async def run_aime(args) -> dict:
             "text_tail": res.text[-500:],
         }
 
-    sem = asyncio.Semaphore(args.concurrency)
-    async def with_sem(i, row):
-        async with sem:
-            return await process(i, row)
-
     t_start = time.time()
-    tasks = [asyncio.create_task(with_sem(i, ds[i])) for i in range(len(ds))]
-    for task in asyncio.as_completed(tasks):
-        r = await task
-        rows.append(r)
-        print(f"  [{len(rows)}/{len(ds)}] gold={r['gold']} pred={r['pred']} ok={r['ok']} fin={r['finish_reason']} tok={r['completion_tokens']}", file=sys.stderr)
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        tasks = [asyncio.create_task(process(session, i, ds[i])) for i in range(len(ds))]
+        for task in asyncio.as_completed(tasks):
+            r = await task
+            rows.append(r)
+            print(f"  [{len(rows)}/{len(ds)}] gold={r['gold']} pred={r['pred']} ok={r['ok']} fin={r['finish_reason']} tok={r['completion_tokens']}", file=sys.stderr)
 
     rows.sort(key=lambda r: r["i"])
     n = len(rows)
