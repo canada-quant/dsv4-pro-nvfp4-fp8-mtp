@@ -1,0 +1,98 @@
+diff --git a/vllm/models/deepseek_v4/nvidia/model.py b/vllm/models/deepseek_v4/nvidia/model.py
+index 4ba1b3bea..981f26e1e 100644
+--- a/vllm/models/deepseek_v4/nvidia/model.py
++++ b/vllm/models/deepseek_v4/nvidia/model.py
+@@ -624,6 +624,63 @@ class DeepseekV4MoE(nn.Module):
+         self.tp_size = get_tensor_model_parallel_world_size()
+         config = vllm_config.model_config.hf_config
+         quant_config = vllm_config.quant_config
++        # When constructing MTP draft tower (prefix contains 'mtp_block') and
++        # the on-disk MTP block is BF16, skip quantization so FusedMoE
++        # allocates BF16 slots. Patch for canada-quant V4-Pro v0.3+ which
++        # keeps mtp.0.* fully BF16 to recover MTP acceptance.
++        # Detect MTP layer: trunk has layers 0..num_hidden_layers-1; the
++        # MTP draft uses layer index == num_hidden_layers (61 for V4-Pro).
++        # MoE prefix looks like 'model.layers.<N>.ffn'; extract N via regex.
++        import re as _re
++        _is_mtp_layer = False
++        try:
++            _m = _re.search(r'\.layers\.(\d+)\.', prefix or '')
++            if _m:
++                _layer_idx = int(_m.group(1))
++                _n_hidden = int(getattr(config, 'num_hidden_layers', 10**9))
++                _is_mtp_layer = (_layer_idx >= _n_hidden)
++        except (ValueError, AttributeError, IndexError):
++            _is_mtp_layer = False
++        if _is_mtp_layer:
++            import json as _json
++            from pathlib import Path as _Path
++            try:
++                model_path = vllm_config.model_config.model
++                idx_path = _Path(model_path) / 'model.safetensors.index.json'
++                if idx_path.exists():
++                    idx = _json.load(idx_path.open())
++                    wm = idx.get('weight_map', {})
++                    has_quant_sidecar = any(
++                        k.startswith('mtp.') and (
++                            k.endswith('.weight_scale')
++                            or k.endswith('.weight_scale_inv')
++                            or k.endswith('.weight_packed')
++                            or k.endswith('.weight_scale_2')
++                        )
++                        for k in wm
++                    )
++                    if not has_quant_sidecar:
++                        import logging
++                        logging.getLogger('vllm').info(
++                            'DeepseekV4MoE: prefix=%r is MTP layer; mtp.* is BF16 on disk -> quant_config=None',
++                            prefix,
++                        )
++                        quant_config = None
++                        # FlashInfer TRTLLM unquantized kernel doesn't support
++                        # V4-Pro routing method 100. Triton backend handles
++                        # arbitrary routing. Mutate kernel_config.moe_backend
++                        # safely here because the trunk's MoEs were already
++                        # constructed (NVFP4 path captured the prior value);
++                        # only this MTP MoE picks up the override.
++                        try:
++                            vllm_config.kernel_config.moe_backend = 'triton'
++                            logging.getLogger('vllm').info(
++                                'DeepseekV4MoE: MTP layer overriding moe_backend -> triton'
++                            )
++                        except Exception:
++                            pass
++            except Exception:
++                pass
+         self.prefix = prefix
+         self.use_mega_moe = (
+             vllm_config.kernel_config.moe_backend == "deep_gemm_mega_moe"
+@@ -654,6 +711,29 @@ class DeepseekV4MoE(nn.Module):
+                 f"{config.expert_dtype!r}. Drop --kernel-config moe_backend="
+                 "deep_gemm_mega_moe for this checkpoint."
+             )
++        # MegaMoE expects MXFP4 weights (group=32 E8M0 scales) + fused-name MoE
++        # params (experts.w13_input_scale etc). NVFP4 ModelOpt layout uses
++        # per-expert names (experts.{E}.w{1,2,3}.input_scale) plus group=16
++        # E4M3 + per-tensor FP32 global scale + a W4A4 activation path. Without
++        # this guard the load gets all the way to the weight-mapping step
++        # before failing with a confusing KeyError. See issue #43454.
++        if self.use_mega_moe:
++            _qc = getattr(config, "quantization_config", None) or {}
++            _algo = (_qc.get("moe_quant_algo") if isinstance(_qc, dict) else None)
++            if isinstance(_algo, str) and _algo.upper() == "NVFP4":
++                raise NotImplementedError(
++                    "DeepSeek V4 MegaMoE (--moe-backend deep_gemm_mega_moe) "
++                    "does not currently dispatch NVFP4 expert layout. The "
++                    "mega-kernel expects FP8 activations + MXFP4 weights "
++                    "(group=32 E8M0 scales) and the loader registers "
++                    "fused-name parameters (e.g. experts.w13_input_scale); "
++                    "NVFP4 ModelOpt layout uses per-expert names "
++                    "(experts.{E}.w{1,2,3}.input_scale) plus group=16 E4M3 "
++                    "scales + per-tensor FP32 global scale + a different W4A4 "
++                    "activation path. Use --moe-backend flashinfer_trtllm for "
++                    "NVFP4 MoE artifacts on Blackwell, or use deep_gemm_mega_moe "
++                    "on a native MXFP4 source artifact."
++                )
+ 
+         # Fused RMSNorm + gate: owns both ffn_norm and the gate matmul.
+         self.norm_gate = NormGateLinear(

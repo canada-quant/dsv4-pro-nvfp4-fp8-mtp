@@ -23,7 +23,7 @@ An NVFP4-FP8 conversion of `deepseek-ai/DeepSeek-V4-Pro` that retains the MTP (m
 - 1,598.84 B total parameters / 49.60 B active per token — verified by summing tensor element counts across all 64 shards.
 - Routed FFN experts converted **MXFP4 group=32 → NVFP4 group=16**: per-block E8M0 → E4M3 scales + per-tensor FP32 `weight_scale_2` (shared between `w1`/`w3` per ModelOpt invariant) + per-tensor FP32 `input_scale=1.0` sidecars.
 - Attention (`wq_a/wq_b/wkv/wo_a/wo_b` and fused variants), shared experts, indexer, compressor: **FP8 block 128×128, preserved verbatim**.
-- MTP block (`mtp.0.*`): NVFP4 experts (same as trunk) + BF16 `e_proj`/`h_proj` (dequantized from FP8 at conversion time, **verified 100% byte-equivalent** to on-the-fly source FP8 dequant — see [forensic doc](docs/findings/e_proj_h_proj_forensic.md)).
+- MTP block (`mtp.0.*`): NVFP4 experts (same as trunk) + BF16 `e_proj`/`h_proj` (dequantized from FP8 at conversion time, **verified 100% byte-equivalent** to on-the-fly source FP8 dequant — see [forensic doc](docs/findings/e_proj_h_proj_forensic.md)). A v0.3 experiment with the entire `mtp.0.*` block re-dequanted to BF16 was tried (see [bisection doc](docs/findings/mtp_v03_bf16_block_bisection.md)) and did **not** recover MTP acceptance; v0.2 remains the shipped artifact.
 - Hardware target: 8× B300 SXM6 AC (compute_cap 10.3), TP=8 + expert-parallel.
 
 ## Headline measurements
@@ -75,9 +75,22 @@ Measured under headline config + `--speculative-config '{"method":"mtp","num_spe
 | **Per-token acceptance rate** | **1.82%** |
 | Equivalent average accept length (N=2) | 1.036 |
 
-This is in the same regime as the LMSYS day-zero V4-Pro report (accept length ~1.19 on the officially partner-blessed fork-built deployment, with the explicit note "the MTP path may not be hitting full effectiveness on Pro"). vLLM upstream itself classifies V4-Pro MTP as an `opt_in_features` entry in the official recipe YAML — not the default deployment. The low rate reflects V4-Pro's trained MTP head, not the conversion: byte-level forensic ([`docs/findings/e_proj_h_proj_forensic.md`](docs/findings/e_proj_h_proj_forensic.md)) confirms our `mtp.0.{e_proj, h_proj}` BF16 weights are 100% byte-equivalent to the source FP8 dequant.
+**Update 2026-05-23**: The MTP acceptance gap was investigated in two stages and the framing has been corrected.
 
-MTP is retained on disk so users can opt in (rejection-sample overhead is small at this acceptance rate) or benefit automatically if upstream V4-Pro MTP improves.
+**Stage 1** — measured the *same V4-Pro MTP head* on the native MXFP4 checkpoint via the partner-blessed `vllm/vllm-openai:deepseekv4-cu130` docker image (zyongye fork): **91.14% at n=1, 80.56% at n=2** on the same 20-prompt workload. The MTP head itself is healthy — the earlier "MTP is structurally weak on V4-Pro" framing in this card was retracted (see vLLM issue [#43455](https://github.com/vllm-project/vllm/issues/43455)).
+
+**Stage 2** — bisected whether the gap was from the NVFP4 quantization of `mtp.0.ffn.experts.*`. Built a v0.3 candidate artifact (NOT shipped) with the **entire `mtp.0.*` block as BF16** (matches V4-Flash's predecessor recipe exactly; +98 GB on disk vs v0.2). MTP acceptance moved 3.07% → **3.33%** — within noise. The mtp.0 quant choice is *not* the dominant cause. v0.3 stays as a documented research artifact; v0.2 remains the shipped product.
+
+The remaining suspect after the bisection is the **trunk's NVFP4 quantization perturbing the activation distribution that flows into the MTP head**. The V4-Pro MTP head was trained against the native MXFP4 trunk's outputs; our trunk is NVFP4 (group=16 + E4M3 + per-tensor FP32) which gives subtly different quant noise per layer. After 61 trunk layers the activation distribution diverges enough that the head's drafts no longer align with the trunk's verifier, and drafts get rejected. Recovering MTP would require **re-training the MTP head against the NVFP4-trunk activation distribution** — which needs a BF16 V4-Pro source to do cleanly, and no such source is publicly available.
+
+The artifact now keeps `mtp.0.*` BF16 on disk:
+- 100% byte-equivalent to source FP8/MXFP4 dequant (verified per-tensor — see [`docs/findings/e_proj_h_proj_forensic.md`](docs/findings/e_proj_h_proj_forensic.md))
+- Forward-compatible if upstream V4-Pro MTP recalibration or mainline-vLLM MTP-forward fixes ship later — recovery happens at serve time without re-converting
+- Costs +98 GB vs v0.2's hybrid layout
+
+Full bisection writeup at [`docs/findings/mtp_v03_bf16_block_bisection.md`](docs/findings/mtp_v03_bf16_block_bisection.md). 2×2 matrix at [`docs/findings/mtp_native_vs_ours_2026_05_23.md`](docs/findings/mtp_native_vs_ours_2026_05_23.md).
+
+**Production recommendation**: serve this artifact **without `--speculative-config`** until upstream resolves V4-Pro MTP for NVFP4-trunk artifacts. Trunk quality is unchanged from v0.2 (GSM8K 96.89%, MMLU-Pro 81.64%, HumanEval 95.1% / 89.6% — all unaffected by the mtp.0 block change since MTP is not used at decode time). Batched throughput stays at the v0.2 figures.
 
 ## Recommended serving config
 
@@ -94,7 +107,12 @@ vllm serve canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP \
   --attention_config.use_fp4_indexer_cache=True \
   --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'
 
-# Add for MTP spec-decode (opt-in; ~1.8% acceptance per above):
+# MTP spec-decode is currently NOT recommended on this artifact (~3% acceptance
+# due to the trunk-NVFP4 ↔ MTP-head distribution mismatch documented above).
+# When upstream V4-Pro MTP recalibration ships or mainline-vLLM MTP forward is
+# fixed for NVFP4-trunk artifacts, the line below becomes worth enabling.
+# Until then, leave MTP off and serve only the trunk (full +41% c=16 advantage
+# vs native MXFP4 still holds without MTP).
 #   --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
 ```
 
@@ -124,7 +142,7 @@ This is a **format conversion** (MXFP4 → NVFP4), not a fresh calibration. V4-P
 | Tensor category | Source format | Target format | Action |
 |---|---|---|---|
 | `layers.X.ffn.experts.Y.w{1,2,3}` (routed) | MXFP4 group=32 + E8M0 block scale | NVFP4 group=16 + E4M3 block scale + FP32 per-tensor S_g + FP32 `input_scale=1.0` | Re-quantize: dequant → regroup → per-tensor `S_g = max_amax / (FP4_max × E4M3_max)` (shared between `w1` and `w3` per ModelOpt invariant; independent for `w2`) → per-block E4M3 → FP4 grid quantize |
-| `mtp.0.ffn.experts.Y.w{1,2,3}` | MXFP4 group=32 | NVFP4 group=16 | Re-quantize (same as trunk) |
+| `mtp.0.ffn.experts.Y.w{1,2,3}` | MXFP4 group=32 | NVFP4 group=16 | Re-quantize (same as trunk). v0.3 BF16 alternative was tested and falsified — see [`docs/findings/mtp_v03_bf16_block_bisection.md`](docs/findings/mtp_v03_bf16_block_bisection.md) |
 | `layers.X.attn.{wq_a, wq_b, wkv, wo_a, wo_b}` | FP8 block 128×128 | FP8 block 128×128 | Passthrough |
 | `layers.X.ffn.shared_experts.w*` | FP8 block 128×128 | FP8 block 128×128 | Passthrough |
 | `layers.X.{hc_attn_*, hc_ffn_*, attn_norm, ffn_norm}` | BF16 | BF16 | Passthrough |
@@ -154,7 +172,7 @@ Upstream issues filed from this work (no installer-side action; tracking + docs 
 | Issue | Subject | Status |
 |---|---|---|
 | [#43454](https://github.com/vllm-project/vllm/issues/43454) | `deep_gemm_mega_moe` doesn't dispatch NVFP4 (per-expert vs fused param naming) — `KeyError: 'layers.0.ffn.experts.w13_input_scale'` | open |
-| [#43455](https://github.com/vllm-project/vllm/issues/43455) | V4-Pro MTP acceptance 1.82% on vLLM mainline reproduces LMSYS day-zero ~1.19 accept length — `opt_in_features` classification correctly reflects current MTP head capability | open (informational) |
+| [#43455](https://github.com/vllm-project/vllm/issues/43455) | V4-Pro MTP acceptance ~1.82% on our mainline-patched build vs ~80% on the native checkpoint + fork docker image (corrected — original `opt_in_features` framing was wrong) | open (investigating) |
 
 If any merge after this writing, the installer script's patch list should shrink to match.
 

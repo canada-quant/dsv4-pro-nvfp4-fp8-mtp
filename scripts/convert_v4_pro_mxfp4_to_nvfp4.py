@@ -274,10 +274,19 @@ def dequantize_fp8_block_to_bf16(
 
 # ---------- tensor dispatch ----------
 
-EXPERT_WEIGHT_RE = re.compile(r"^(layers\.\d+|mtp\.\d+)\.ffn\.experts\.\d+\.w[123]\.weight$")
-EXPERT_SCALE_RE = re.compile(r"^(layers\.\d+|mtp\.\d+)\.ffn\.experts\.\d+\.w[123]\.scale$")
-MTP_EH_PROJ_WEIGHT_RE = re.compile(r"^mtp\.\d+\.(e_proj|h_proj)\.weight$")
-MTP_EH_PROJ_SCALE_RE = re.compile(r"^mtp\.\d+\.(e_proj|h_proj)\.scale$")
+EXPERT_WEIGHT_RE = re.compile(r"^layers\.\d+\.ffn\.experts\.\d+\.w[123]\.weight$")
+EXPERT_SCALE_RE = re.compile(r"^layers\.\d+\.ffn\.experts\.\d+\.w[123]\.scale$")
+MTP_EXPERT_WEIGHT_RE = re.compile(r"^mtp\.\d+\.ffn\.experts\.\d+\.w[123]\.weight$")
+MTP_EXPERT_SCALE_RE = re.compile(r"^mtp\.\d+\.ffn\.experts\.\d+\.w[123]\.scale$")
+# All non-expert mtp.0 FP8-block pairs we dequant to BF16, mirroring V4-Flash's
+# all-BF16 MTP block. Covers attn.{wkv, wo_a, wo_b, wq_a, wq_b},
+# ffn.shared_experts.{w1, w2, w3}, and e_proj / h_proj.
+MTP_FP8_BLOCK_WEIGHT_RE = re.compile(
+    r"^mtp\.\d+\.(attn\.(wkv|wo_a|wo_b|wq_a|wq_b)|ffn\.shared_experts\.w[123]|e_proj|h_proj)\.weight$"
+)
+MTP_FP8_BLOCK_SCALE_RE = re.compile(
+    r"^mtp\.\d+\.(attn\.(wkv|wo_a|wo_b|wq_a|wq_b)|ffn\.shared_experts\.w[123]|e_proj|h_proj)\.scale$"
+)
 
 
 def classify_tensor(key: str) -> str:
@@ -285,10 +294,25 @@ def classify_tensor(key: str) -> str:
         return "expert_weight"
     if EXPERT_SCALE_RE.match(key):
         return "expert_scale"
-    if MTP_EH_PROJ_WEIGHT_RE.match(key):
-        return "mtp_eh_proj_weight"
-    if MTP_EH_PROJ_SCALE_RE.match(key):
-        return "mtp_eh_proj_scale"
+    # mtp.0.ffn.experts.*: dequant MXFP4 → BF16 (mirrors V4-Flash recipe which
+    # left the entire MTP block BF16 via calibration `ignore=[r"re:.*mtp\..*"]`
+    # and got 81-88% MTP acceptance. Re-quantizing to NVFP4 here drops
+    # acceptance to 1-3% per the bisection in
+    # docs/findings/mtp_native_vs_ours_2026_05_23.md.)
+    if MTP_EXPERT_WEIGHT_RE.match(key):
+        return "mtp_expert_weight"
+    if MTP_EXPERT_SCALE_RE.match(key):
+        return "mtp_expert_scale"
+    # All non-expert FP8-block-quantized mtp.0 pairs → BF16. Required because
+    # _mtp_block_is_quantized_on_disk in vLLM patch #43319 is binary — it
+    # either applies quant_config wholesale or skips quantization entirely.
+    # Hybrid cases (some mtp.0 modules quantized, some BF16) fail at load
+    # with FP4-packed-shape vs BF16-shape mismatch. Easier to make all of
+    # mtp.0.* BF16 on disk so the detector cleanly returns False.
+    if MTP_FP8_BLOCK_WEIGHT_RE.match(key):
+        return "mtp_fp8_block_weight"
+    if MTP_FP8_BLOCK_SCALE_RE.match(key):
+        return "mtp_fp8_block_scale"
     return "passthrough"
 
 
@@ -318,7 +342,10 @@ def convert_shard(
         # First pass: collect expert weight/scale pairs
         expert_pairs: dict[str, tuple[str, str]] = {}  # base → (weight_key, scale_key)
         passthrough_keys: list[str] = []
-        mtp_eh_pairs: dict[str, tuple[str, str]] = {}
+        # mtp.0 FP8-block (non-expert): attn / shared_experts / e_proj / h_proj
+        mtp_fp8_block_pairs: dict[str, tuple[str, str]] = {}
+        # mtp.0.ffn.experts.* — dequant to BF16 instead of NVFP4 re-quant
+        mtp_expert_pairs: dict[str, tuple[str, str]] = {}
 
         for k in keys:
             cls = classify_tensor(k)
@@ -330,14 +357,22 @@ def convert_shard(
                 base = k.removesuffix(".scale")
                 expert_pairs.setdefault(base, [None, None])
                 expert_pairs[base][1] = k
-            elif cls == "mtp_eh_proj_weight":
+            elif cls == "mtp_expert_weight":
                 base = k.removesuffix(".weight")
-                mtp_eh_pairs.setdefault(base, [None, None])
-                mtp_eh_pairs[base][0] = k
-            elif cls == "mtp_eh_proj_scale":
+                mtp_expert_pairs.setdefault(base, [None, None])
+                mtp_expert_pairs[base][0] = k
+            elif cls == "mtp_expert_scale":
                 base = k.removesuffix(".scale")
-                mtp_eh_pairs.setdefault(base, [None, None])
-                mtp_eh_pairs[base][1] = k
+                mtp_expert_pairs.setdefault(base, [None, None])
+                mtp_expert_pairs[base][1] = k
+            elif cls == "mtp_fp8_block_weight":
+                base = k.removesuffix(".weight")
+                mtp_fp8_block_pairs.setdefault(base, [None, None])
+                mtp_fp8_block_pairs[base][0] = k
+            elif cls == "mtp_fp8_block_scale":
+                base = k.removesuffix(".scale")
+                mtp_fp8_block_pairs.setdefault(base, [None, None])
+                mtp_fp8_block_pairs[base][1] = k
             else:
                 passthrough_keys.append(k)
 
@@ -417,10 +452,15 @@ def convert_shard(
                 new_tensors[f"{base}.input_scale"] = torch.tensor([1.0], dtype=torch.float32)
                 expert_count += 1
 
-        # Dequantize MTP e_proj/h_proj FP8 → BF16
+        # Dequantize ALL non-expert mtp.0 FP8-block weights → BF16. Covers
+        # attn.{wkv, wo_a, wo_b, wq_a, wq_b}, ffn.shared_experts.{w1, w2, w3},
+        # and e_proj / h_proj. Makes the entire mtp.0 block BF16 on disk so
+        # vLLM patch #43319's _mtp_block_is_quantized_on_disk detector
+        # cleanly returns False and the MTP draft tower is constructed
+        # without quantization.
         mtp_eh_count = 0
         mtp_eh_dropped_scales = []
-        for base, (wk, sk) in mtp_eh_pairs.items():
+        for base, (wk, sk) in mtp_fp8_block_pairs.items():
             if wk is None:
                 continue
             w_e4m3 = f.get_tensor(wk)  # float8_e4m3fn
@@ -435,6 +475,35 @@ def convert_shard(
             mtp_eh_dropped_scales.append(sk)
             mtp_eh_count += 1
 
+        # Dequantize MTP routed experts MXFP4 → BF16. Mirrors V4-Flash recipe
+        # which kept all of mtp.0.* at BF16 and achieved 80%+ MTP acceptance.
+        # Re-quantizing mtp experts to NVFP4 was found (2026-05-23) to drop
+        # MTP acceptance from native's 91% to 3% on this artifact.
+        # See docs/findings/mtp_native_vs_ours_2026_05_23.md.
+        mtp_expert_count = 0
+        mtp_expert_dropped_scales = []
+        for base, (wk, sk) in mtp_expert_pairs.items():
+            if wk is None or sk is None:
+                if wk: new_tensors[wk] = f.get_tensor(wk)
+                if sk: new_tensors[sk] = f.get_tensor(sk)
+                continue
+            w = f.get_tensor(wk)
+            s = f.get_tensor(sk)
+            if w.dtype == torch.int8:
+                w = w.view(torch.uint8)
+            if s.dtype == torch.float8_e8m0fnu:
+                s = s.view(torch.uint8)
+            w_dev = w.to(device)
+            s_dev = s.to(device)
+            # Same dequant math as the trunk's amax pre-pass:
+            # FP4 byte -> magnitude lookup; E8M0 byte -> 2^(b-127); broadcast 32-wide.
+            fp4_unpacked = fp4_unpack_to_float(w_dev, fp4_mags)  # [out, in]
+            src_scales = e8m0_decode(s_dev)
+            src_unpacked = fp4_unpacked * src_scales.repeat_interleave(32, dim=1)
+            new_tensors[wk] = src_unpacked.to(torch.bfloat16).cpu()
+            mtp_expert_dropped_scales.append(sk)
+            mtp_expert_count += 1
+
     # Add metadata
     metadata["format"] = "pt"
     metadata.setdefault(
@@ -448,8 +517,9 @@ def convert_shard(
     dt = time.time() - t0
     print(
         f"{log_prefix}{src_path.name} → {out_path.name}: "
-        f"{expert_count} expert pairs converted, "
-        f"{mtp_eh_count} MTP eh_proj dequantized, "
+        f"{expert_count} trunk-expert pairs converted, "
+        f"{mtp_expert_count} MTP-expert pairs dequantized (BF16), "
+        f"{mtp_eh_count} MTP eh_proj dequantized (BF16), "
         f"{len(passthrough_keys)} passthrough, "
         f"{dt:.1f}s",
         file=sys.stderr,
@@ -457,6 +527,7 @@ def convert_shard(
 
     return {
         "expert_count": expert_count,
+        "mtp_expert_count": mtp_expert_count,
         "mtp_eh_count": mtp_eh_count,
         "passthrough_count": len(passthrough_keys),
         "elapsed_s": dt,
@@ -580,6 +651,7 @@ def rewrite_config(src_dir: Path, out_dir: Path) -> None:
             "weight_scale_2_dtype": "fp32",
         },
         "mtp_e_proj_h_proj_dequant": "bf16",
+        "mtp_experts_dequant": "bf16",
     }
     out_cfg = out_dir / "config.json"
     with out_cfg.open("w") as f:
