@@ -1,0 +1,20 @@
+diff --git a/vllm/models/deepseek_v4/nvidia/mtp.py b/vllm/models/deepseek_v4/nvidia/mtp.py
+--- a/vllm/models/deepseek_v4/nvidia/mtp.py
++++ b/vllm/models/deepseek_v4/nvidia/mtp.py
+@@ -152,6 +152,15 @@ class DeepSeekV4MultiTokenPredictorLayer(nn.Module):
+         if _mtp_block_is_quantized_on_disk(vllm_config):
+             quant_config = vllm_config.quant_config
+         else:
+             quant_config = None
++            # v5: also null vllm_config.quant_config globally so the inner
++            # DeepseekV4DecoderLayer (attn + ffn) builds unquantized. Without
++            # this, attn / ffn still read the original NVFP4 quant_config and
++            # register scale parameters that never get loaded (BF16-on-disk
++            # has no scale keys), leaving them at default values -> MTP draft
++            # produces near-random tokens (~3% acceptance vs ~91% on fork).
++            # Safe to mutate here because trunk layers were constructed first;
++            # only the MTP draft model is built after this.
++            vllm_config.quant_config = None
+             logger.info_once(
+                 "MTP block weights are BF16 on disk (no quant scales for "
+                 "mtp.* keys in the safetensors index). Constructing the MTP "

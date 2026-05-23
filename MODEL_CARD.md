@@ -75,22 +75,26 @@ Measured under headline config + `--speculative-config '{"method":"mtp","num_spe
 | **Per-token acceptance rate** | **1.82%** |
 | Equivalent average accept length (N=2) | 1.036 |
 
-**Update 2026-05-23**: The MTP acceptance gap was investigated in two stages and the framing has been corrected.
+**Update 2026-05-23**: The MTP acceptance gap was investigated in three stages and the conclusion has been re-framed: this is a **mainline-vLLM-vs-fork build path bug, not an artifact/conversion bug**. The artifact is fine; the production deployment recipe is to use the partner-blessed `zyongye/vllm` fork docker (or wait for the mainline fix to land).
 
 **Stage 1** — measured the *same V4-Pro MTP head* on the native MXFP4 checkpoint via the partner-blessed `vllm/vllm-openai:deepseekv4-cu130` docker image (zyongye fork): **91.14% at n=1, 80.56% at n=2** on the same 20-prompt workload. The MTP head itself is healthy — the earlier "MTP is structurally weak on V4-Pro" framing in this card was retracted (see vLLM issue [#43455](https://github.com/vllm-project/vllm/issues/43455)).
 
-**Stage 2** — bisected whether the gap was from the NVFP4 quantization of `mtp.0.ffn.experts.*`. Built a v0.3 candidate artifact (NOT shipped) with the **entire `mtp.0.*` block as BF16** (matches V4-Flash's predecessor recipe exactly; +98 GB on disk vs v0.2). MTP acceptance moved 3.07% → **3.33%** — within noise. The mtp.0 quant choice is *not* the dominant cause. v0.3 stays as a documented research artifact; v0.2 remains the shipped product.
+**Stage 2** — bisected whether the gap was from the NVFP4 quantization of `mtp.0.ffn.experts.*`. Built a v0.3 candidate (NVFP4 trunk + entire `mtp.0.*` as BF16; +98 GB on disk vs v0.2). MTP acceptance moved 3.07% → 3.33% — within noise. The mtp.0 quant choice is *not* the cause.
 
-The remaining suspect after the bisection is the **trunk's NVFP4 quantization perturbing the activation distribution that flows into the MTP head**. The V4-Pro MTP head was trained against the native MXFP4 trunk's outputs; our trunk is NVFP4 (group=16 + E4M3 + per-tensor FP32) which gives subtly different quant noise per layer. After 61 trunk layers the activation distribution diverges enough that the head's drafts no longer align with the trunk's verifier, and drafts get rejected. Recovering MTP would require **re-training the MTP head against the NVFP4-trunk activation distribution** — which needs a BF16 V4-Pro source to do cleanly, and no such source is publicly available.
+**Stage 3** — built a v0.4-bisect artifact (**MXFP4-passthrough trunk** + BF16 `mtp.0.*`, i.e. native-equivalent trunk format with our conversion path) and served on our mainline build with all patches applied. MTP acceptance: **2.65%**. Identical artifact format that gives **91% on fork docker** gives **3% on our mainline build**. Tested a "v5" patch (also null `vllm_config.quant_config` globally so the MTP block's attn + ffn build unquantized when mtp.* is BF16 on disk): no effect. The trunk format and mtp.0 format are both ruled out; the bug is in mainline vLLM's MTP forward path between Apr 25 2026 (fork SHA `e8e38e16`) and May 22 2026 (our pinned `39910f2b25`) — most likely the `MHCFusedPostPreOp` introduction and/or the `NormGatedLinear` refactor of `ffn_norm`+router gate in the MoE block.
 
-The artifact now keeps `mtp.0.*` BF16 on disk:
+Full Stage 3 writeup at [`docs/findings/mtp_v05_full_unquant_breakthrough.md`](docs/findings/mtp_v05_full_unquant_breakthrough.md). 2×2 matrix at [`docs/findings/mtp_native_vs_ours_2026_05_23.md`](docs/findings/mtp_native_vs_ours_2026_05_23.md). Filed as vLLM issue [#43472](https://github.com/vllm-project/vllm/issues/43472) along with the separately-discovered stacked-attn FP8 scale loader gap that blocks our mainline build from loading the native artifact.
+
+The artifact keeps `mtp.0.*` BF16 on disk:
 - 100% byte-equivalent to source FP8/MXFP4 dequant (verified per-tensor — see [`docs/findings/e_proj_h_proj_forensic.md`](docs/findings/e_proj_h_proj_forensic.md))
-- Forward-compatible if upstream V4-Pro MTP recalibration or mainline-vLLM MTP-forward fixes ship later — recovery happens at serve time without re-converting
-- Costs +98 GB vs v0.2's hybrid layout
+- Forward-compatible the moment mainline vLLM ships the MTP-forward fix or the partner fork merges into mainline
+- Loads cleanly on either the partner fork docker (with the route the fork uses) or our mainline build (with the 4 patches + the `_mtp_block_is_quantized_on_disk` BF16 dispatch)
 
-Full bisection writeup at [`docs/findings/mtp_v03_bf16_block_bisection.md`](docs/findings/mtp_v03_bf16_block_bisection.md). 2×2 matrix at [`docs/findings/mtp_native_vs_ours_2026_05_23.md`](docs/findings/mtp_native_vs_ours_2026_05_23.md).
+**Production recommendations:**
 
-**Production recommendation**: serve this artifact **without `--speculative-config`** until upstream resolves V4-Pro MTP for NVFP4-trunk artifacts. Trunk quality is unchanged from v0.2 (GSM8K 96.89%, MMLU-Pro 81.64%, HumanEval 95.1% / 89.6% — all unaffected by the mtp.0 block change since MTP is not used at decode time). Batched throughput stays at the v0.2 figures.
+1. **For working MTP at 91% acceptance**: serve the *native* `deepseek-ai/DeepSeek-V4-Pro` checkpoint on the partner-blessed `vllm/vllm-openai:deepseekv4-cu130` docker image with `--speculative-config method=mtp num_speculative_tokens=1`. That path is verified end-to-end.
+
+2. **For this NVFP4 artifact's trunk quality (the headline numbers above)**: serve on our mainline build **without `--speculative-config`** until vLLM issue [#43472](https://github.com/vllm-project/vllm/issues/43472) resolves. Trunk quality is unchanged from v0.2 measurements (GSM8K 96.89%, MMLU-Pro 81.64%, HumanEval 95.1% / 89.6% — all measured MTP-off). Batched throughput stays at the v0.2 figures (1606 tok/s aggregate at c=64).
 
 ## Recommended serving config
 
