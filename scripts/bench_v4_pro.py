@@ -138,6 +138,19 @@ def gsm8k_extract_gold(answer: str) -> str:
     return answer.strip().replace(",", "")
 
 
+def gsm8k_numeric_eq(pred: str | None, gold: str | None, tol: float = 1e-9) -> bool:
+    """Numeric equality for GSM8K answers. Robust to '75' vs '75.00' and to
+    embedded $ / , / whitespace. Falls back to False on parse failure."""
+    if pred is None or gold is None:
+        return False
+    try:
+        p = float(str(pred).replace(",", "").replace("$", "").strip())
+        g = float(str(gold).replace(",", "").replace("$", "").strip())
+        return abs(p - g) <= max(tol, tol * max(abs(p), abs(g)))
+    except (ValueError, TypeError):
+        return False
+
+
 async def run_gsm8k(args) -> dict:
     from datasets import load_dataset
 
@@ -166,7 +179,10 @@ async def run_gsm8k(args) -> dict:
                 max_tokens=args.max_tokens, temperature=0.0,
             )
         pred = gsm8k_extract_answer(res.text)
-        ok = pred is not None and pred == gold
+        # NUMERIC match — '75' vs '75.00' compare equal. String match was a
+        # systematic source of false negatives (~3 pt accuracy gap on V4-Pro
+        # GSM8K where the model emits trailing decimals).
+        ok = gsm8k_numeric_eq(pred, gold)
         return {
             "i": i, "question": question[:200], "gold": gold, "pred": pred,
             "ok": ok, "finish_reason": res.finish_reason,

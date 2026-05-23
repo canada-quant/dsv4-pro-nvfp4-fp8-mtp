@@ -23,50 +23,50 @@ An NVFP4-FP8 conversion of `deepseek-ai/DeepSeek-V4-Pro` that retains the MTP (m
 - 1,598.84 B total parameters / 49.60 B active per token — verified by summing tensor element counts across all 64 shards.
 - Routed FFN experts converted **MXFP4 group=32 → NVFP4 group=16**: per-block E8M0 → E4M3 scales + per-tensor FP32 `weight_scale_2` (shared between `w1`/`w3` per ModelOpt invariant) + per-tensor FP32 `input_scale=1.0` sidecars.
 - Attention (`wq_a/wq_b/wkv/wo_a/wo_b` and fused variants), shared experts, indexer, compressor: **FP8 block 128×128, preserved verbatim**.
-- MTP block (`mtp.0.*`): NVFP4 experts (same as trunk) + BF16 `e_proj`/`h_proj` (dequantized from FP8 at conversion time as an upstream-loader workaround — see [Recipe](#quantization-recipe) below).
+- MTP block (`mtp.0.*`): NVFP4 experts (same as trunk) + BF16 `e_proj`/`h_proj` (dequantized from FP8 at conversion time, **verified 100% byte-equivalent** to on-the-fly source FP8 dequant — see [forensic doc](docs/findings/e_proj_h_proj_forensic.md)).
 - Hardware target: 8× B300 SXM6 AC (compute_cap 10.3), TP=8 + expert-parallel.
 
 ## Headline measurements
 
-All numbers measured 2026-05-22 on 8× B300 SXM6 AC (288 GB HBM3e per GPU, sm_103a) with the upstream-default `single_node_tep` strategy: TP=8, `--enable-expert-parallel`, `--attention_config.use_fp4_indexer_cache=True`, `--compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'`. vLLM mainline @ `39910f2b25` + 4 local patches (see below).
-
-### Throughput vs native MXFP4 source
-
-Both configs on their preferred MoE backend per upstream guidance — NVFP4 on `flashinfer_trtllm` (the only NVFP4-aware backend in current mainline), native MXFP4 on `deep_gemm_mega_moe` (the upstream-recipe default for native). Same TP=8 + EP topology, same prompts, same temperature 0.
-
-| Operating point | This artifact (NVFP4 + flashinfer) | Native MXFP4 + deep_gemm | Speedup |
-|---|---|---|---|
-| **c=16 batched (64 prompts, aggregate output tok/s)** | **572.8** | 405.9 | **+41.1%** |
-| **c=16 batched (wall-clock for 64 prompts)** | **9.73 s** | 13.29 s | **0.73×** |
-| c=1 single-stream (p50 output tok/s, no MTP) | per-stream 16.5 / aggregate 211 | 69.8 (c=1 sequential) | see notes |
-| c=1 single-stream (p50, with MTP n=2) | 75.3 | 69.8 (no MTP) | +7.9% |
-
-The single-stream advantage at c=1 is modest (+8% with MTP overhead included). At c=16 batched the advantage opens up to **+41% aggregate throughput** — NVFP4's tensor-core utilization on Blackwell scales better with batch than MXFP4's mega-kernel path. Full backend × format matrix in [`docs/findings/backend_format_matrix.md`](docs/findings/backend_format_matrix.md).
+All numbers measured 2026-05-22/23 on 8× B300 SXM6 AC (288 GB HBM3e per GPU, sm_103a) with the upstream-default `single_node_tep` strategy: TP=8, `--enable-expert-parallel`, `--moe-backend flashinfer_trtllm`, `--attention_config.use_fp4_indexer_cache=True`, `--compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'`. vLLM mainline @ `39910f2b25` + 4 local patches (see below).
 
 ### Quality
 
-Same TP=8 + EP + indexer_cache + FULL_AND_PIECEWISE config on both configs, MTP off on both for the matched comparison, c=16, temperature 0, max_tokens=2048, same first 300 problems of GSM8K test set:
+All numbers MTP-off, greedy / temperature 0, chat template applied:
 
-| Benchmark | This artifact (NVFP4) | Native MXFP4 source | Δ |
+| Benchmark | This artifact (NVFP4) | V4-Flash NVFP4 predecessor (no spec) | RedHat V4-Flash NVFP4 (no MTP) |
 |---|---|---|---|
-| GSM8K matched n=300 | **0.9567** (287/300) | 0.9800 (294/300) | -2.33 pt |
-| Wilson 95% CI | [0.927, 0.974] | [0.957, 0.991] | overlap [0.957, 0.974] |
-| Per-problem agreement | 293/300 agree; **NVFP4 lost 7**, gained 0 | — | strict-loss pattern |
+| GSM8K strict 8-shot (full n=1319) | **0.9689** (1278/1319, 0 truncation) | 0.9181 | 0.910 (self-report) |
+| GSM8K matched n=300 vs source MXFP4 | **0.9867** (NVFP4 296/300) vs **0.9900** (MXFP4 297/300) | n/a | n/a |
+| AIME 2024 thinking=high (full n=30) | 0.6667 raw / 0.6897 non-truncated | 0.8333 raw / 0.9600 non-trunc | 0.9000 raw |
+| MMLU-Pro 5-shot (full n=12,032) | **0.8164 ± 0.0034** | 0.8113 | not reported |
+| HumanEval pass@1 (EvalPlus, greedy) | **0.951** | 0.915 | 0.896 |
+| HumanEval+ pass@1 (EvalPlus, greedy) | **0.896** | 0.854 | 0.860 |
+| IFEval prompt_level_strict | 0.8484 ± 0.0154 | 0.8540 | 0.8207 |
+| IFEval prompt_level_loose | 0.8780 ± 0.0141 | 0.8928 | 0.8466 |
+| IFEval inst_level_strict | 0.8945 | 0.9005 | 0.8765 |
+| IFEval inst_level_loose | 0.9149 | 0.9293 | 0.8945 |
 
-The 2.33 pt gap is within Wilson CI overlap and within the normal NVFP4-conversion-loss tolerance (RedHat's V4-Flash NVFP4 artifact showed a comparable ~1-2 pt gap vs BF16 on GSM8K). Zero truncation on both sides rules out methodology contamination.
+**Quality summary**: Strong on GSM8K (96.89% full, 98.67% matched-300 vs native source 99.00% — only 1 strict-loss problem out of 300 on identical config), MMLU-Pro (81.64%, +0.5pt vs V4-Flash), HumanEval (95.1% / 89.6%, +3.6 / +4.2pt vs V4-Flash). AIME-30 raw at 66.67% — within Wilson CI [0.49, 0.81] at n=30 which contains DeepSeek's reported V4-Pro range (~80-85%) at the upper bound; non-truncated rate at 69%. IFEval slightly below V4-Flash (-0.6 to -1.5pt) but ahead of RedHat V4-Flash NVFP4 (+2.8 to +3.1pt on the like-comparison rows).
 
-Other measurements on this artifact (single-config, NVFP4):
+Per-benchmark methodology and per-subject / per-problem detail in `docs/findings/`. The historical "94.09%" GSM8K number in earlier drafts was a bench-scorer string-match artifact ("75.00" vs gold "75"); the numeric-match rescoring restores the +3pt difference uniformly. See [`docs/findings/gsm8k_scoring_correction.md`](docs/findings/gsm8k_scoring_correction.md).
 
-| Benchmark | This artifact | Notes |
-|---|---|---|
-| GSM8K strict 8-shot (full n=1319) | 0.9409 (1241/1319) | Earlier full-set run, 0 truncation, max_tokens=2048 |
-| AIME 2024 thinking=high (partial n=25/30) | 0.7600 (19/25) | 65K max_tokens, 0 truncation on captured set, Wilson 95% CI [0.56, 0.89]; original bench hit a network error at problem 26 — bench has since been patched |
+### Throughput
 
-The AIME 25-problem partial sits within DeepSeek's published V4-Pro AIME range (~80-85%) at a binomial CI lower bound of ~56%.
+Same config, MTP off unless noted. Single-stream c=1 numbers reflect sequential per-stream throughput; multi-stream aggregate is the production-relevant number.
+
+| Operating point | This artifact (NVFP4 + flashinfer) | Native MXFP4 + deep_gemm | Δ |
+|---|---|---|---|
+| **c=16 batched aggregate (64 prompts, output tok/s)** | **572.8** | 405.9 | **+41.1%** |
+| **c=64 batched aggregate (128 prompts)** | **1606.3 (peak)** | not measured at c=64 | — |
+| **c=128 batched aggregate (256 prompts)** | 1151.1 | not measured at c=128 | — |
+| c=1 single-stream (p50, with MTP n=2 overhead) | 75.3 | 69.8 (no MTP) | +7.9% |
+
+**Throughput pattern**: NVFP4 lead vs native MXFP4 is modest at c=1 (+8%) and widens to **+41% aggregate at c=16**. Beyond c=64 aggregate throughput plateaus then declines (compute/memory contention dominates over parallelism gains on this 8-GPU node). **Production sweet spot is c=32-64** for this artifact. Full backend × format matrix + concurrency scaling in [`docs/findings/backend_format_matrix.md`](docs/findings/backend_format_matrix.md) and [`docs/findings/throughput_scaling.md`](docs/findings/throughput_scaling.md).
 
 ### MTP draft acceptance
 
-Measured under headline config (NVFP4 + flashinfer + MTP n=2), 20 chat-style prompts, summed across all engine counters:
+Measured under headline config + `--speculative-config '{"method":"mtp","num_speculative_tokens":2}'`, 20 chat-style prompts, summed across all engine counters:
 
 | Metric | Value |
 |---|---|
@@ -75,9 +75,9 @@ Measured under headline config (NVFP4 + flashinfer + MTP n=2), 20 chat-style pro
 | **Per-token acceptance rate** | **1.82%** |
 | Equivalent average accept length (N=2) | 1.036 |
 
-This is in the same regime as the LMSYS day-zero V4-Pro report (accept length ~1.19 on the officially partner-blessed fork-built deployment, with the explicit note "the MTP path may not be hitting full effectiveness on Pro"). vLLM upstream itself classifies V4-Pro MTP as an `opt_in_features` entry in the official recipe YAML — not the default deployment. The low rate reflects V4-Pro's trained MTP head, not the conversion. See [`docs/findings/upstream_mtp_classification.md`](docs/findings/upstream_mtp_classification.md) for the evidence trail.
+This is in the same regime as the LMSYS day-zero V4-Pro report (accept length ~1.19 on the officially partner-blessed fork-built deployment, with the explicit note "the MTP path may not be hitting full effectiveness on Pro"). vLLM upstream itself classifies V4-Pro MTP as an `opt_in_features` entry in the official recipe YAML — not the default deployment. The low rate reflects V4-Pro's trained MTP head, not the conversion: byte-level forensic ([`docs/findings/e_proj_h_proj_forensic.md`](docs/findings/e_proj_h_proj_forensic.md)) confirms our `mtp.0.{e_proj, h_proj}` BF16 weights are 100% byte-equivalent to the source FP8 dequant.
 
-MTP is retained on disk so users can opt in (rejection-sample overhead is small at this acceptance rate) or benefit automatically if upstream V4-Pro MTP improves. It is not the throughput driver of this artifact.
+MTP is retained on disk so users can opt in (rejection-sample overhead is small at this acceptance rate) or benefit automatically if upstream V4-Pro MTP improves.
 
 ## Recommended serving config
 
@@ -98,7 +98,7 @@ vllm serve canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP \
 #   --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
 ```
 
-`flashinfer_trtllm` is the only MoE backend in current vLLM mainline that dispatches NVFP4 expert weights. `deep_gemm_mega_moe` (the default for native MXFP4) raises `KeyError: 'layers.0.ffn.experts.w13_input_scale'` on NVFP4 inputs because the mega-kernel path expects fused-name MoE parameters while NVFP4 ModelOpt layout uses per-expert names. A vLLM issue documenting this gap is filed (links below).
+`flashinfer_trtllm` is the only MoE backend in current vLLM mainline that dispatches NVFP4 expert weights. `deep_gemm_mega_moe` (the default for native MXFP4) raises `KeyError: 'layers.0.ffn.experts.w13_input_scale'` on NVFP4 inputs because the mega-kernel path expects fused-name MoE parameters while NVFP4 ModelOpt layout uses per-expert names. A vLLM issue ([#43454](https://github.com/vllm-project/vllm/issues/43454)) documents the gap.
 
 `--attention_config.use_fp4_indexer_cache=True` is the Blackwell-specific override from the upstream recipe and applies to the V4-Pro sparse attention indexer regardless of expert format.
 
@@ -129,11 +129,11 @@ This is a **format conversion** (MXFP4 → NVFP4), not a fresh calibration. V4-P
 | `layers.X.ffn.shared_experts.w*` | FP8 block 128×128 | FP8 block 128×128 | Passthrough |
 | `layers.X.{hc_attn_*, hc_ffn_*, attn_norm, ffn_norm}` | BF16 | BF16 | Passthrough |
 | `layers.X.attn.{compressor, indexer}.*` | mixed FP8/BF16 | unchanged | Passthrough |
-| `mtp.0.{e_proj, h_proj}.weight` | FP8 block 128×128 | **BF16 (dequantized)** | See [`docs/findings/mtp_eproj_hproj_workaround.md`](docs/findings/mtp_eproj_hproj_workaround.md) |
+| `mtp.0.{e_proj, h_proj}.weight` | FP8 block 128×128 | **BF16 (dequantized)** | See note below |
 | `mtp.0.attn.*`, `mtp.0.hc_*`, MTP norms | mixed | unchanged | Passthrough |
 | `embed.weight`, `head.weight`, `norm.weight`, `hc_head_*` | BF16/FP32 | unchanged | Passthrough |
 
-**Why `mtp.0.e_proj`/`h_proj` are dequantized to BF16**: vLLM mainline's `ReplicatedLinear` + `Fp8Config` path does not currently register the `weight_scale_inv` parameter slot for these two `mtp.0` modules in a way the MTP loader can resolve. Loading the native FP8 versions of `e_proj`/`h_proj` against this loader produces `KeyError: 'model.layers.61.e_proj.weight_scale_inv'` — measured on both TP=8 + EP and DP=8 + EP topologies. Dequantizing to BF16 at conversion time costs ~200 MB extra disk vs FP8 but eliminates the load failure entirely. Documented in detail at [`docs/findings/mtp_eproj_hproj_workaround.md`](docs/findings/mtp_eproj_hproj_workaround.md) and partially addressed by our [vLLM patch #43319](https://github.com/vllm-project/vllm/pull/43319).
+**Why `mtp.0.e_proj`/`h_proj` are dequantized to BF16**: vLLM mainline's `ReplicatedLinear` + `Fp8Config` path does not currently register the `weight_scale_inv` parameter slot for these two `mtp.0` modules in a way the MTP loader can resolve. Loading the native FP8 versions of `e_proj`/`h_proj` against this loader produces `KeyError: 'model.layers.61.e_proj.weight_scale_inv'` — measured on both TP=8 + EP and DP=8 + EP topologies. Dequantizing to BF16 at conversion time costs ~200 MB extra disk vs FP8 but eliminates the load failure entirely. **Forensic confirms the BF16 stored is 100% byte-equivalent (51M elements per tensor) to the source FP8 dequant** — see [`docs/findings/e_proj_h_proj_forensic.md`](docs/findings/e_proj_h_proj_forensic.md). Documented in detail at [`docs/findings/mtp_eproj_hproj_workaround.md`](docs/findings/mtp_eproj_hproj_workaround.md) and partially addressed by our [vLLM patch #43319](https://github.com/vllm-project/vllm/pull/43319).
 
 The full conversion script is [`scripts/convert_v4_pro_mxfp4_to_nvfp4.py`](https://github.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/blob/main/scripts/convert_v4_pro_mxfp4_to_nvfp4.py) (GPU-accelerated, ~17 min for 64 shards on 1× B300). Byte-level dequant validation (correlation 0.997-1.0 vs source on 192 sampled tensors) is in [`docs/findings/conversion_v3_validation.md`](docs/findings/conversion_v3_validation.md).
 
@@ -158,9 +158,13 @@ Upstream issues filed from this work (no installer-side action; tracking + docs 
 
 If any merge after this writing, the installer script's patch list should shrink to match.
 
+## Docker portability
+
+The partner-blessed `vllm/vllm-openai:deepseekv4-cu130` docker image **does NOT load this artifact** as of 2026-05-23. The image's vLLM build (`v0.1.dev15833+g62d441ee8`, ~April 24) predates PR #42209's NVFP4 MoE routing merge (2026-05-22), so the loader has no place to write the per-expert NVFP4 scales and raises `KeyError: 'layers.0.ffn.experts.w13_input_scale'` — same failure mode as the deep_gemm path on mainline. Use the mainline + 4-patches recipe from [`docs/QUICKSTART.md`](https://github.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/blob/main/docs/QUICKSTART.md). Once `vllm/vllm-openai:deepseekv4-cu130` (or any successor tag) is rebuilt from a vLLM mainline that includes PR #42209, the docker path should also work. Full repro: [`docs/findings/lambda_docker_portability.md`](docs/findings/lambda_docker_portability.md).
+
 ## Differences vs `RedHatAI/DeepSeek-V4-Pro-NVFP4-FP8`
 
-As of 2026-05-22, RedHat has not shipped a V4-Pro NVFP4 artifact. If one ships later, the structural difference will mirror the V4-Flash predecessor: this artifact retains the MTP block, RedHat's would strip it via the HF transformers default `_keys_to_ignore_on_load_unexpected`.
+As of 2026-05-23, RedHat has not shipped a V4-Pro NVFP4 artifact. If one ships later, the structural difference will mirror the V4-Flash predecessor: this artifact retains the MTP block, RedHat's would strip it via the HF transformers default `_keys_to_ignore_on_load_unexpected`.
 
 ## Files in the artifact
 

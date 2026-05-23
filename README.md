@@ -8,41 +8,35 @@ The conversion is byte-level and deterministic; V4-Pro shipped natively as FP4+F
 
 ## Measurements (8× B300 SXM6 AC, TP=8 + EP, upstream-default `single_node_tep` strategy)
 
-All measurements on the same TP=8 + EP topology, `--attention_config.use_fp4_indexer_cache=True`, `--compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'`. NVFP4 dispatches via `flashinfer_trtllm` (the only NVFP4-aware MoE backend in current vLLM mainline); native MXFP4 dispatches via `deep_gemm_mega_moe` (upstream-recipe default for native).
+All measurements on the same TP=8 + EP topology, `--moe-backend flashinfer_trtllm`, `--attention_config.use_fp4_indexer_cache=True`, `--compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'`. MTP off unless noted.
+
+### Quality
+
+| Benchmark | This artifact (NVFP4) | V4-Flash NVFP4 predecessor | RedHat V4-Flash NVFP4 |
+|---|---|---|---|
+| GSM8K strict 8-shot (full n=1319, 0 truncation) | **0.9689** | 0.9181 | 0.910 (self-report) |
+| GSM8K matched n=300, NVFP4 vs source MXFP4 | 0.9867 vs 0.9900 (1 strict-loss) | n/a | n/a |
+| AIME 2024 thinking=high (n=30, 0 length-truncation) | 0.6667 raw / 0.6897 non-truncated | 0.8333 / 0.9600 | 0.9000 |
+| MMLU-Pro 5-shot (full n=12,032) | **0.8164 ± 0.0034** | 0.8113 | not reported |
+| HumanEval pass@1 (EvalPlus, greedy) | **0.951** | 0.915 | 0.896 |
+| HumanEval+ pass@1 (EvalPlus, greedy) | **0.896** | 0.854 | 0.860 |
+| IFEval prompt_level_strict | 0.8484 ± 0.0154 | 0.8540 | 0.8207 |
+| MTP draft acceptance (chat workload, N=2) | 1.82% (240/13180 tokens) | n/a | n/a |
+
+GSM8K full set under proper numeric scoring is **96.89%** (the older 94.09% number was a bench string-match artifact — `75.00 vs 75`; see [`docs/findings/gsm8k_scoring_correction.md`](docs/findings/gsm8k_scoring_correction.md)). On the matched-300 subset under identical config NVFP4 loses only 1 strict-loss problem vs the native MXFP4 source. HumanEval is the strongest quality lift (+3.6 / +4.2pt vs V4-Flash NVFP4). MTP acceptance is in the LMSYS-reported V4-Pro regime (their accept length 1.19 on the partner-blessed deployment); upstream classifies V4-Pro MTP as `opt_in_features` not default. The artifact's `mtp.0.{e_proj, h_proj}` BF16 weights are **100% byte-equivalent** to source FP8 dequant — the MTP weakness is not caused by the conversion.
 
 ### Throughput
 
-| Operating point | This artifact (NVFP4 + flashinfer) | Native MXFP4 + deep_gemm | Δ |
+| Operating point | This artifact (NVFP4) | Native MXFP4 + deep_gemm | Δ |
 |---|---|---|---|
-| **c=16 batched aggregate (64 prompts, output tok/s)** | **572.8** | 405.9 | **+41.1%** |
-| c=16 batched wall-clock (64 prompts) | 9.73 s | 13.29 s | 0.73× |
-| c=1 single-stream (p50 output tok/s, +MTP n=2) | 75.3 | 69.8 | +7.9% |
+| c=16 batched aggregate (64 prompts, output tok/s) | **572.8** | 405.9 | **+41.1%** |
+| c=64 batched aggregate (peak, 128 prompts) | **1606.3** | not measured at c=64 | — |
+| c=128 batched aggregate (256 prompts) | 1151.1 | not measured at c=128 | — |
+| c=1 single-stream + MTP n=2 | 75.3 | 69.8 (no MTP) | +7.9% |
 
-The single-stream c=1 advantage is modest (+8%); the batched c=16 advantage opens up to +41% — NVFP4's tensor-core utilization on Blackwell scales better with batch than MXFP4's mega-kernel path. Full backend × format matrix in [`docs/findings/backend_format_matrix.md`](docs/findings/backend_format_matrix.md).
+NVFP4 lead vs the upstream-recipe-default native MXFP4 path is modest at c=1 (+8%) and widens to **+41% aggregate at c=16**. Throughput peaks around c=64 (1606 tok/s aggregate) and drops past c=64 — **production sweet spot is c=32-64** on this 8-GPU node. Full backend × format matrix + scaling curve in [`docs/findings/backend_format_matrix.md`](docs/findings/backend_format_matrix.md) and [`docs/findings/throughput_scaling.md`](docs/findings/throughput_scaling.md).
 
-### Quality (matched GSM8K-300, same config, no MTP, c=16, max_tokens=2048, temp=0)
-
-| | NVFP4 (this artifact) | Native MXFP4 | Δ |
-|---|---|---|---|
-| Correct | 287/300 | 294/300 | -7 |
-| Accuracy | 0.9567 | 0.9800 | -2.33 pt |
-| Wilson 95% CI | [0.927, 0.974] | [0.957, 0.991] | overlap [0.957, 0.974] |
-| Per-problem agreement | 293/300 agree; **NVFP4 lost 7**, gained 0 | — | strict-loss pattern |
-| Truncation | 0 | 0 | — |
-
-The 2.33 pt gap is within Wilson CI overlap and within the normal NVFP4-conversion-loss tolerance (comparable to the V4-Flash NVFP4 ↔ BF16 gap reported by RedHat).
-
-Other measurements on this artifact:
-
-| Benchmark | This artifact |
-|---|---|
-| GSM8K strict 8-shot (full n=1319) | 0.9409 (1241/1319), 0 truncation |
-| AIME 2024 thinking=high (partial n=25/30) | 0.7600 (19/25), 0 truncation on captured set |
-| MTP draft acceptance (chat workload, N=2) | 1.82% (240/13180 tokens) |
-
-MTP acceptance is in the same regime as the LMSYS day-zero V4-Pro report (accept length ~1.19), and vLLM upstream itself classifies V4-Pro MTP as an `opt_in_features` entry — not the default deployment. The low rate reflects V4-Pro's trained MTP head, not the conversion. See [`docs/findings/upstream_mtp_classification.md`](docs/findings/upstream_mtp_classification.md).
-
-Full per-benchmark write-ups in [`docs/findings/`](docs/findings/) and raw JSONs in [`docs/benchmarks/`](docs/benchmarks/).
+Full per-benchmark write-ups in [`docs/findings/`](docs/findings/) and raw JSONs in [`docs/benchmarks/matrix/`](docs/benchmarks/matrix/).
 
 ## Quick start
 
@@ -73,6 +67,10 @@ Add `--speculative-config '{"method":"mtp","num_speculative_tokens":2}'` to enab
 
 Full setup in [`docs/QUICKSTART.md`](docs/QUICKSTART.md). The 4 patches + gotcha catalog in [`docs/VLLM_SETUP_ISSUES.md`](docs/VLLM_SETUP_ISSUES.md).
 
+## Docker portability
+
+The partner-blessed `vllm/vllm-openai:deepseekv4-cu130` docker image does NOT load this artifact (as of 2026-05-23) — same `KeyError: w13_input_scale` as the deep_gemm path on mainline. The image's vLLM build predates PR #42209's NVFP4 MoE routing merge (2026-05-22). Use our mainline + 4-patches build path. Full repro in [`docs/findings/lambda_docker_portability.md`](docs/findings/lambda_docker_portability.md).
+
 ## Recipe summary
 
 | Group | Modules | Source | Target |
@@ -81,7 +79,7 @@ Full setup in [`docs/QUICKSTART.md`](docs/QUICKSTART.md). The 4 patches + gotcha
 | attention | `wq_a, wq_b, wkv, wo_a, wo_b` and fused variants | FP8 block 128×128 | unchanged |
 | shared experts | `shared_experts.w*` | FP8 block 128×128 | unchanged |
 | hc/norms/indexer/compressor | various | BF16 / mixed | unchanged |
-| **`mtp.0.{e_proj, h_proj}.weight`** | FP8 block 128×128 | **BF16 (dequantized)** | upstream-loader workaround — see `docs/findings/mtp_eproj_hproj_workaround.md` |
+| **`mtp.0.{e_proj, h_proj}.weight`** | FP8 block 128×128 | **BF16 (dequantized)** — 100% byte-equivalent to source dequant | upstream-loader workaround — see `docs/findings/mtp_eproj_hproj_workaround.md` |
 | embeddings / head / hc_head | various | BF16/FP32 | unchanged |
 
 Per-expert NVFP4 sidecars: `<expert>.w{1,2,3}.weight_scale_2` (FP32 [1] global scale, shared between w1/w3 per ModelOpt invariant) and `<expert>.w{1,2,3}.input_scale` (FP32 [1] activation scale, value 1.0).
@@ -114,16 +112,21 @@ docs/
   VLLM_SETUP_ISSUES.md                — the 4 patches + setup gotchas
   FINDINGS.md                         — index of findings docs
   benchmarks/                         — per-benchmark JSON outputs
-    matrix/                           — backend×format matrix outputs (2026-05-22)
+    matrix/                           — backend×format matrix + extension cells outputs
   findings/                           — methodology + diagnostic notes
-    backend_format_matrix.md          — NVFP4×MXFP4 × flashinfer×deep_gemm matrix
-    conversion_math_validation.md     — byte-level dequant validation
-    conversion_v3_validation.md       — 192-tensor sampled validation
+    backend_format_matrix.md          — NVFP4×MXFP4 × flashinfer×deep_gemm matrix + matched-GSM8K-300
+    throughput_scaling.md             — c=1 → c=128 batched concurrency sweep
+    aime30_full_2026_05_22.md         — AIME-30 thinking=high full run
+    mmlu_pro_2026_05_22.md            — MMLU-Pro 5-shot full 12k
+    humaneval_2026_05_22.md           — HumanEval / HumanEval+ via EvalPlus
+    ifeval_2026_05_22.md              — IFEval zero-shot
+    gsm8k_scoring_correction.md       — bench string-match → numeric-match fix
+    e_proj_h_proj_forensic.md         — mtp.0 BF16 byte-equivalence proof
+    lambda_docker_portability.md      — partner-blessed docker image does not load this artifact
     mtp_eproj_hproj_workaround.md     — why mtp.0.{e_proj,h_proj} are BF16 in this artifact
     upstream_mtp_classification.md    — vLLM/LMSYS evidence on V4-Pro MTP weakness
-    upstream_research_v4_pro_ground_truth.md
-    phase_0_closeout.md
-    phase_6_quality_summary.md
+    conversion_math_validation.md     — initial byte-level dequant validation
+    conversion_v3_validation.md       — 192-tensor sampled validation
   recipes/
     nvfp4_fp8_mtp_replication.md      — full conversion + serve replication recipe
 patches/
@@ -135,7 +138,7 @@ patches/
 scripts/
   install_vllm_with_patches.sh        — one-line installer (CUDA toolkit + Rust + 4 patches)
   convert_v4_pro_mxfp4_to_nvfp4.py    — GPU-accelerated conversion (~17 min on 1× B300)
-  bench_v4_pro.py                     — unified GSM8K / AIME / latency / MTP harness
+  bench_v4_pro.py                     — unified GSM8K / AIME / latency / MTP harness (numeric-match GSM8K scorer)
   matrix_runner.sh                    — backend×format matrix driver
   extension_runner.sh                 — c=16 batched + matched-GSM8K extension driver
 vendor/dsv4-pro-upstream/             — vendored upstream model.py / kernel.py / config.json
