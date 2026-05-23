@@ -1,0 +1,51 @@
+diff --git a/vllm/models/deepseek_v4/nvidia/model.py b/vllm/models/deepseek_v4/nvidia/model.py
+--- a/vllm/models/deepseek_v4/nvidia/model.py
++++ b/vllm/models/deepseek_v4/nvidia/model.py
+@@ -1112,40 +1112,28 @@ class DeepseekV4DecoderLayer(nn.Module):
+         post_mix: torch.Tensor | None = None,
+         res_mix: torch.Tensor | None = None,
+         residual: torch.Tensor | None = None,
+-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+-        if residual is None:
+-            # Run standalone hc_pre on first layer
+-            residual = x
+-            x, post_mix, res_mix = self.hc_pre(
+-                x, self.hc_attn_fn, self.hc_attn_scale, self.hc_attn_base
+-            )
+-        else:
+-            residual, post_mix, res_mix, x = self.mhc_fused_post_pre(
+-                x, residual, post_mix, res_mix,
+-                self.hc_attn_fn, self.hc_attn_scale, self.hc_attn_base,
+-                self.rms_norm_eps, self.hc_eps, self.hc_eps,
+-                self.hc_post_alpha, self.hc_sinkhorn_iters,
+-            )
+-
++    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
++        # v6 experiment (vLLM issue #43472): replace mhc_fused_post_pre with
++        # explicit hc_pre + hc_post pairs (fork-style pre-PR-#41536 behavior)
++        # to test whether the fused kernel regressed MTP draft acceptance.
++        # RESULT: no effect — MTP stays at 2.85% vs 2.65% baseline.
++        # Patch reverted; preserved here as a reference test artifact.
++        residual = x
++        x, post, comb = self.hc_pre(
++            x, self.hc_attn_fn, self.hc_attn_scale, self.hc_attn_base
++        )
+         x = self.attn_norm(x)
+         x = self.attn(positions, x, None)
++        x = self.hc_post(x, residual, post, comb)
+
+-        residual, post_mix, res_mix, x = self.mhc_fused_post_pre(
+-            x, residual, post_mix, res_mix,
+-            self.hc_ffn_fn, self.hc_ffn_scale, self.hc_ffn_base,
+-            self.rms_norm_eps, self.hc_eps, self.hc_eps,
+-            self.hc_post_alpha, self.hc_sinkhorn_iters,
++        residual = x
++        x, post, comb = self.hc_pre(
++            x, self.hc_ffn_fn, self.hc_ffn_scale, self.hc_ffn_base
+         )
+-        # ffn_norm is now folded into self.ffn.norm_gate; ffn() takes
+-        # the pre-norm activation directly.
+         x = self.ffn(x, input_ids)
+-        return x, residual, post_mix, res_mix
++        x = self.hc_post(x, residual, post, comb)
++        return x, None, None, None

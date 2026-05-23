@@ -40,13 +40,17 @@ Both patches (v3 + v5) verified to fire on all 8 workers via log:
 
 ## Result
 
-| Artifact | MTP n=1 (no v5) | MTP n=1 (v5 applied) | Verdict |
-|---|---|---|---|
-| v0.4-bisect (MXFP4 trunk + BF16 mtp.0) | 2.65% | **2.65%** | Identical — v5 has no effect |
+| Test | MTP n=1 acceptance | Verdict |
+|---|---|---|
+| v0.4-bisect, no extra patch | 2.65% | Baseline (build + artifact-format independent) |
+| v0.4-bisect + v5 patch (full unquant MTP block) | **2.65%** | v5 has no effect |
+| v0.4-bisect + v6 patch (fork-pattern hc_pre/hc_post, bypassing `mhc_fused_post_pre`) | **2.85%** | v6 has no effect |
 
-**v5 has no effect on MTP acceptance.** The hypothesis — that MTP block's attn/ffn quant_config mismatch is the cause — is falsified.
+Both hypotheses falsified. The bug is **not** in:
+- Quant config propagation to MTP attn/ffn (v5)
+- The fused `mhc_fused_post_pre` kernel introduced by PR #41536 (v6)
 
-Patch reverted to keep mainline clean.
+Both patches reverted.
 
 ## Why v5 didn't help
 
@@ -84,12 +88,27 @@ Native checkpoint has `mtp.0.attn.wq_a.scale` and `mtp.0.attn.wkv.scale` (per-ke
 
 This is a separate fix that would unblock our build from serving the native checkpoint. Filed as follow-up to PR #43319.
 
+## Other suspect commits in the mainline-vs-fork window (Apr 25 → May 22)
+
+`git log` of `vllm/v1/spec_decode/` and `vllm/v1/worker/gpu/spec_decode/` in that window surfaces these as the next likely culprits:
+
+- **#42538 (May 13) `[ModelRunner V2] Share identical MTP weights`** — adds `topk_indices_buffer` sharing between draft and target. If the target's lightning-indexer state gets clobbered when the draft model runs (or vice versa), MTP draft would emit corrupt tokens. Highest suspicion now.
+- **#41035 (May 12) `[Model Runner V2] Apply synthetic mode to probabilistic rejection sampler`**
+- **#40269 (May 13) `[Bugfix][Spec Decode] Wire draft_probs into probabilistic draft_model rejection`**
+- **#40651 (Apr 26, just inside the window) `[Model Runner V2] Fix rejection sampling acceptance rate gap vs MRV1`** — directly mentions "acceptance rate gap"; possibly introduced a new gap
+
+Isolating which one requires SHA bisection (multi-hour build cycles per attempt).
+
 ## Conclusion
 
-The MTP gap on our build is real, reproducible, and not yet root-caused. The hypothesis tested in this experiment (`quant_config` propagation bug) is falsified. The remaining suspect surface is the mainline-vs-fork divergence in `mhc_fused_post_pre` + `norm_gate` semantics — but isolating and fixing that requires either:
+The MTP gap on our build is real, reproducible, and not yet root-caused. Two specific hypotheses tested and falsified:
+- v5: quant_config propagation to MTP block's attn/ffn → no effect
+- v6: PR #41536 `mhc_fused_post_pre` regression → no effect
 
-(a) Mainline SHA bisection between Apr 25 and May 22 (multi-hour build cycles).
-(b) Porting fork's loader + DecoderLayer code wholesale to mainline (multi-day effort).
+The remaining suspect surface narrows to the MTP weight/buffer sharing (#42538) and the rejection-sampler refactor commits between May 12-13. Isolating which requires either:
+
+(a) Mainline SHA bisection between Apr 25 and May 22 (multi-hour build cycles per point).
+(b) Porting fork's full spec_decode / loader / DecoderLayer code into mainline (multi-day effort).
 (c) Filing the gap as a vLLM issue and waiting for the maintainers (who shipped both versions) to investigate.
 
 **Filed:** vLLM issue [#43472](https://github.com/vllm-project/vllm/issues/43472) covering both findings (the stacked-attn loader gap and the mainline-vs-fork MTP acceptance gap).
