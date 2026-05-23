@@ -28,7 +28,7 @@ An NVFP4-FP8 conversion of `deepseek-ai/DeepSeek-V4-Pro` that retains the MTP (m
 
 ## Headline measurements
 
-All numbers measured 2026-05-22/23 on 8× B300 SXM6 AC (288 GB HBM3e per GPU, sm_103a) with the upstream-default `single_node_tep` strategy: TP=8, `--enable-expert-parallel`, `--moe-backend flashinfer_trtllm`, `--attention_config.use_fp4_indexer_cache=True`, `--compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'`. vLLM mainline @ `39910f2b25` + 4 local patches (see below).
+All numbers measured 2026-05-22/23 on 8× B300 SXM6 AC (288 GB HBM3e per GPU, sm_103a) with the upstream-default `single_node_tep` strategy: TP=8, `--enable-expert-parallel`, `--moe-backend flashinfer_trtllm`, `--attention_config.use_fp4_indexer_cache=True`, `--compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'`. vLLM mainline @ `39910f2b25` + 5 local patches (see below).
 
 ### Quality
 
@@ -123,7 +123,7 @@ vllm serve canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP \
 ## Quick start
 
 ```bash
-# 1. Build vLLM with the 4 required patches (~15 min)
+# 1. Build vLLM with the 5 required patches (~15 min)
 curl -sL https://raw.githubusercontent.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/main/scripts/install_vllm_with_patches.sh | bash
 
 # 2. Download the artifact (852 GiB, ~5-10 min with HF Xet + token)
@@ -157,7 +157,7 @@ The full conversion script is [`scripts/convert_v4_pro_mxfp4_to_nvfp4.py`](https
 
 ## vLLM patches required
 
-The artifact loads on vLLM mainline + the 4 open patches below. PR #42209 (the NVFP4 MoE support for DSV4) merged 2026-05-22 and is now in mainline directly. The installer script applies the 4 remaining patches automatically.
+The artifact loads on vLLM mainline + the 5 open patches below. PR #42209 (the NVFP4 MoE support for DSV4) merged 2026-05-22 and is now in mainline directly. The installer script applies the 5 remaining patches automatically.
 
 | PR | Purpose | Status |
 |---|---|---|
@@ -166,6 +166,8 @@ The artifact loads on vLLM mainline + the 4 open patches below. PR #42209 (the N
 | [#43288](https://github.com/vllm-project/vllm/pull/43288) | `scale_fmt` defensive `.get()` + BF16 `getattr` wrap | open |
 | [#43290](https://github.com/vllm-project/vllm/pull/43290) | `weight_scale_inv`-or-`weight_scale` fallback (attention) | open |
 | [#43319](https://github.com/vllm-project/vllm/pull/43319) | MTP loader: candidate-list scale resolution + BF16-on-disk detect | open |
+| [#43467](https://github.com/vllm-project/vllm/pull/43467) | DSV4 MegaMoE early-fail for NVFP4 (deep_gemm + NVFP4 incompatible) | open |
+| **v0.3 BF16-MTP dispatch** (`patches/patch_v0p3_dsv4_mtp_bf16_dispatch.diff`) | DSV4 MoE: detect MTP layer (idx >= num_hidden_layers) and route as unquantized + override moe_backend to triton when on-disk MTP block is BF16. Required to load v0.3+ artifacts. Bundled with #43467's deep_gemm+NVFP4 guard. | local patch; upstream PR pending |
 
 Upstream issues filed from this work (no installer-side action; tracking + docs only):
 

@@ -40,7 +40,7 @@ Full per-benchmark write-ups in [`docs/findings/`](docs/findings/) and raw JSONs
 
 ## Quick start
 
-One-line install (builds vLLM mainline + the 4 patches, ~15 min on a fresh DLAMI):
+One-line install (builds vLLM mainline + the 5 patches, ~15 min on a fresh DLAMI):
 
 ```bash
 curl -sL https://raw.githubusercontent.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/main/scripts/install_vllm_with_patches.sh | bash
@@ -65,7 +65,7 @@ vllm serve canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP \
 
 Add `--speculative-config '{"method":"mtp","num_speculative_tokens":2}'` to enable MTP (opt-in; ~1.8% acceptance per upstream-known V4-Pro MTP limits).
 
-Full setup in [`docs/QUICKSTART.md`](docs/QUICKSTART.md). The 4 patches + gotcha catalog in [`docs/VLLM_SETUP_ISSUES.md`](docs/VLLM_SETUP_ISSUES.md).
+Full setup in [`docs/QUICKSTART.md`](docs/QUICKSTART.md). The 5 patches + gotcha catalog in [`docs/VLLM_SETUP_ISSUES.md`](docs/VLLM_SETUP_ISSUES.md).
 
 ## Docker portability
 
@@ -95,10 +95,12 @@ Patches and issues extracted from this work and filed upstream:
 | vLLM [#43288](https://github.com/vllm-project/vllm/pull/43288) | `.get("scale_fmt", "ue8m0")` + BF16 `getattr` wrap | open |
 | vLLM [#43290](https://github.com/vllm-project/vllm/pull/43290) | `weight_scale_inv`-or-`weight_scale` fallback (attention) | open |
 | vLLM [#43319](https://github.com/vllm-project/vllm/pull/43319) | MTP loader: candidate-list scale resolution + BF16-on-disk detect | open |
+| vLLM [#43467](https://github.com/vllm-project/vllm/pull/43467) | DSV4 MegaMoE early-fail for NVFP4 — clear ValueError instead of cryptic KeyError | open |
+| v0.3 BF16-mtp dispatch (`patches/patch_v0p3_dsv4_mtp_bf16_dispatch.diff`) | DSV4 MoE: detect MTP layer and route unquantized + override moe_backend to triton when mtp.0 is BF16 on disk | local patch; upstream PR pending |
 | vLLM issue [#43454](https://github.com/vllm-project/vllm/issues/43454) | `deep_gemm_mega_moe` doesn't dispatch NVFP4 (per-expert vs fused param naming) — `KeyError: 'layers.0.ffn.experts.w13_input_scale'` | open |
-| vLLM issue [#43455](https://github.com/vllm-project/vllm/issues/43455) | V4-Pro MTP acceptance 1.82% reproduces LMSYS day-zero ~1.19 accept length; `opt_in_features` classification matches | open (informational) |
+| vLLM issue [#43455](https://github.com/vllm-project/vllm/issues/43455) | V4-Pro MTP acceptance investigation — corrected `opt_in_features` framing after native checkpoint hit 91% on fork docker | open |
 
-The installer script applies all 4 open patches automatically. PR #42209 is mainline; the installer's cherry-pick of those 3 commits becomes a no-op if you base the build on a SHA after the merge.
+The installer script applies all 5 open patches automatically. PR #42209 is mainline; the installer's cherry-pick of those 3 commits becomes a no-op if you base the build on a SHA after the merge.
 
 ## Repo layout
 
@@ -109,7 +111,7 @@ PLAN.md                               — phase-by-phase plan with gates
 README.md                             — this file
 docs/
   QUICKSTART.md                       — end-to-end serve recipe
-  VLLM_SETUP_ISSUES.md                — the 4 patches + setup gotchas
+  VLLM_SETUP_ISSUES.md                — the 5 patches + setup gotchas
   FINDINGS.md                         — index of findings docs
   benchmarks/                         — per-benchmark JSON outputs
     matrix/                           — backend×format matrix + extension cells outputs
@@ -136,7 +138,7 @@ patches/
   patch_43319_mtp_quant_detect.diff
   VERSIONS.md
 scripts/
-  install_vllm_with_patches.sh        — one-line installer (CUDA toolkit + Rust + 4 patches)
+  install_vllm_with_patches.sh        — one-line installer (CUDA toolkit + Rust + 5 patches)
   convert_v4_pro_mxfp4_to_nvfp4.py    — GPU-accelerated conversion (~17 min on 1× B300)
   bench_v4_pro.py                     — unified GSM8K / AIME / latency / MTP harness (numeric-match GSM8K scorer)
   matrix_runner.sh                    — backend×format matrix driver

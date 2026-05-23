@@ -9,7 +9,7 @@
 # Environment overrides (all optional):
 #   VLLM_SRC_DIR       Where to clone vLLM (default: $HOME/src/vllm)
 #   VLLM_REF           vLLM ref to base on (default: pinned SHA below)
-#   PATCHES_REPO_RAW   Raw URL prefix for the 4 .diff files (default: this repo's main)
+#   PATCHES_REPO_RAW   Raw URL prefix for the 5 .diff files (default: this repo's main)
 #   TORCH_CUDA_ARCH    Compute capability for build (default: auto-detect)
 #   SKIP_BUILD         If "1", patch only — don't run pip install
 #   SKIP_DEPS          If "1", don't install bench/eval deps (langdetect, evalplus, etc.)
@@ -144,7 +144,7 @@ find . -name "CMakeCache.txt" -delete 2>/dev/null
 find . -name "CMakeFiles" -type d -exec rm -rf {} + 2>/dev/null
 
 # ---------- apply the 4 patches ----------
-echo "==> applying 4 patches (PRs #43248, #43288, #43290, #43319)"
+echo "==> applying 5 patches (PRs #43248, #43288, #43290, #43319, v0.3 BF16 mtp dispatch + #43467)"
 
 PATCH_TMPDIR="$(mktemp -d)"
 trap "rm -rf $PATCH_TMPDIR" EXIT
@@ -212,6 +212,22 @@ experts); MTP loader inspects safetensors header for
 .experts.*.w[123].scale and routes through quant_config when present.
 Required for V4-Pro MTP serving.
 Pending upstream PR: https://github.com/vllm-project/vllm/pull/43319"
+
+apply_patch "patch_v0p3_dsv4_mtp_bf16_dispatch.diff" "v0p3-mtp-bf16" \
+  "Apply v0.3 patch: BF16 mtp.0 block dispatch + deep_gemm+NVFP4 guard
+
+deepseek_v4/nvidia/model.py DeepseekV4MoE:
+  (a) when prefix matches an MTP layer (index >= num_hidden_layers) and
+      the on-disk MTP block has no quant scale sidecars, construct
+      FusedMoE unquantized AND override moe_backend to 'triton' (the
+      default flashinfer_trtllm unquantized backend doesn't support
+      V4-Pro routing method 100). Required to load the canada-quant
+      v0.3 artifact (mtp.0.* fully BF16, +98 GB vs v0.2 hybrid).
+  (b) early-fail with NotImplementedError when --moe-backend
+      deep_gemm_mega_moe is used with NVFP4 artifacts; mega-kernel
+      expects fused-name MoE params, NVFP4 ModelOpt uses per-expert
+      names. Closes vLLM issue #43454.
+Pending upstream PR: https://github.com/vllm-project/vllm/pull/43467 (b only)"
 
 # ---------- cherry-pick PR #42209 (sychen52, NVIDIA): NVFP4 MOE for V4 ----------
 # This is the NVFP4 V4-Pro serving path (Phase 5 from this repo's PLAN.md).
