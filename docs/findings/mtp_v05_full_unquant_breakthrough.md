@@ -45,12 +45,14 @@ Both patches (v3 + v5) verified to fire on all 8 workers via log:
 | v0.4-bisect, no extra patch | 2.65% | Baseline (build + artifact-format independent) |
 | v0.4-bisect + v5 patch (full unquant MTP block) | **2.65%** | v5 has no effect |
 | v0.4-bisect + v6 patch (fork-pattern hc_pre/hc_post, bypassing `mhc_fused_post_pre`) | **2.85%** | v6 has no effect |
+| v0.4-bisect + v7 patch (disable PR #42538's topk_indices_buffer sharing) | **2.65%** | v7 has no effect |
 
-Both hypotheses falsified. The bug is **not** in:
+Three hypotheses falsified. The bug is **not** in:
 - Quant config propagation to MTP attn/ffn (v5)
 - The fused `mhc_fused_post_pre` kernel introduced by PR #41536 (v6)
+- The `topk_indices_buffer` sharing introduced by PR #42538 (v7)
 
-Both patches reverted.
+All three patches reverted to keep mainline clean.
 
 ## Why v5 didn't help
 
@@ -90,22 +92,26 @@ This is a separate fix that would unblock our build from serving the native chec
 
 ## Other suspect commits in the mainline-vs-fork window (Apr 25 → May 22)
 
-`git log` of `vllm/v1/spec_decode/` and `vllm/v1/worker/gpu/spec_decode/` in that window surfaces these as the next likely culprits:
+After three surgical patches (v5/v6/v7) all failed, the remaining suspect surface is the deeper V1 spec_decode rejection-sampler pipeline:
 
-- **#42538 (May 13) `[ModelRunner V2] Share identical MTP weights`** — adds `topk_indices_buffer` sharing between draft and target. If the target's lightning-indexer state gets clobbered when the draft model runs (or vice versa), MTP draft would emit corrupt tokens. Highest suspicion now.
 - **#41035 (May 12) `[Model Runner V2] Apply synthetic mode to probabilistic rejection sampler`**
 - **#40269 (May 13) `[Bugfix][Spec Decode] Wire draft_probs into probabilistic draft_model rejection`**
 - **#40651 (Apr 26, just inside the window) `[Model Runner V2] Fix rejection sampling acceptance rate gap vs MRV1`** — directly mentions "acceptance rate gap"; possibly introduced a new gap
 
-Isolating which one requires SHA bisection (multi-hour build cycles per attempt).
+Already ruled out:
+- ~~#41536 (May 10) `add fused mhc_post_pre kernel`~~ — v6 falsified
+- ~~#42538 (May 13) `Share identical MTP weights`~~ — v7 falsified
+
+Isolating which one (if any) requires either SHA bisection (multi-hour build cycles per point) or a maintainer with spec_decode context — see vLLM issue [#43472](https://github.com/vllm-project/vllm/issues/43472).
 
 ## Conclusion
 
-The MTP gap on our build is real, reproducible, and not yet root-caused. Two specific hypotheses tested and falsified:
+The MTP gap on our build is real, reproducible, and not yet root-caused. Three specific hypotheses tested and falsified:
 - v5: quant_config propagation to MTP block's attn/ffn → no effect
 - v6: PR #41536 `mhc_fused_post_pre` regression → no effect
+- v7: PR #42538 `topk_indices_buffer` sharing → no effect
 
-The remaining suspect surface narrows to the MTP weight/buffer sharing (#42538) and the rejection-sampler refactor commits between May 12-13. Isolating which requires either:
+The remaining suspect surface narrows to the **rejection-sampler refactor commits between May 12-13** (#41035, #40269, #40651). Isolating which requires either:
 
 (a) Mainline SHA bisection between Apr 25 and May 22 (multi-hour build cycles per point).
 (b) Porting fork's full spec_decode / loader / DecoderLayer code into mainline (multi-day effort).

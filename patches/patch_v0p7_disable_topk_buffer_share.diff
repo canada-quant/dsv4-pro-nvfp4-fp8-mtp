@@ -1,0 +1,18 @@
+diff --git a/vllm/v1/worker/gpu/spec_decode/eagle/utils.py b/vllm/v1/worker/gpu/spec_decode/eagle/utils.py
+--- a/vllm/v1/worker/gpu/spec_decode/eagle/utils.py
++++ b/vllm/v1/worker/gpu/spec_decode/eagle/utils.py
+@@ -77,8 +77,9 @@ def load_eagle_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mod
+                     del sh.head
+                     sh.head = target_lm_head
+
+-    # MTP also shares a topk_indices_buffer between target and draft.
+-    if hasattr(target_inner, "topk_indices_buffer"):
+-        if hasattr(draft_inner, "topk_indices_buffer"):
+-            del draft_inner.topk_indices_buffer
+-        draft_inner.topk_indices_buffer = target_inner.topk_indices_buffer
++    # v7 experiment (vLLM #43472): disable PR #42538's topk_indices_buffer
++    # sharing to test if it's the cause of the MTP draft regression.
++    # RESULT: no effect — MTP stays at 2.65%. Patch reverted; preserved here
++    # as a reference test artifact. The bug is somewhere else in the
++    # mainline V1 spec_decode pipeline (#41035 / #40269 / #40651 remain
++    # suspects).
