@@ -184,7 +184,7 @@ This is **for calibration only** — serving the final artifact on vLLM doesn't 
 
 ### 7. compressed-tensors `from_accelerate` AttributeError on sharded modules
 
-`offload/dispatch.py:95` raises `AttributeError: 0 is not an nn.Module` when running multi-rank with expert sharding. Workaround: monkey-patch `Observer.synchronize` to short-circuit on rank > 0. Documented in `docs/findings/multirank_observer_sync_hang.md`.
+`offload/dispatch.py:95` raises `AttributeError: 0 is not an nn.Module` when running multi-rank with expert sharding. Workaround: monkey-patch `Observer.synchronize` to short-circuit on rank > 0. This was a V4-Flash predecessor finding; documented in the predecessor repo at `https://github.com/canada-quant/dsv4-flash-nvfp4-fp8-mtp/blob/main/docs/findings/multirank_observer_sync_hang.md`. Not relevant to V4-Pro since the V4-Pro recipe is a byte-level format conversion (no calibration loop), so the multi-rank Observer code path is not exercised.
 
 ### 8. llm-compressor inference-mode tensor crash on MTP
 
@@ -205,7 +205,7 @@ lm_eval's HumanEval scoring is broken on chat-mode-only models (it produces gibb
 ```bash
 pip install evalplus
 evalplus.codegen humaneval --base-url http://localhost:8089/v1 \
-    --model canada-quant/DeepSeek-V4-Flash-NVFP4-FP8-MTP --backend openai
+    --model canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP --backend openai
 evalplus.evaluate humaneval --samples <output.jsonl>
 ```
 

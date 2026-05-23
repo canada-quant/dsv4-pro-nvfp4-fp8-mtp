@@ -149,6 +149,13 @@ The artifact loads on vLLM mainline + the 4 open patches below. PR #42209 (the N
 | [#43290](https://github.com/vllm-project/vllm/pull/43290) | `weight_scale_inv`-or-`weight_scale` fallback (attention) | open |
 | [#43319](https://github.com/vllm-project/vllm/pull/43319) | MTP loader: candidate-list scale resolution + BF16-on-disk detect | open |
 
+Upstream issues filed from this work (no installer-side action; tracking + docs only):
+
+| Issue | Subject | Status |
+|---|---|---|
+| [#43454](https://github.com/vllm-project/vllm/issues/43454) | `deep_gemm_mega_moe` doesn't dispatch NVFP4 (per-expert vs fused param naming) — `KeyError: 'layers.0.ffn.experts.w13_input_scale'` | open |
+| [#43455](https://github.com/vllm-project/vllm/issues/43455) | V4-Pro MTP acceptance 1.82% on vLLM mainline reproduces LMSYS day-zero ~1.19 accept length — `opt_in_features` classification correctly reflects current MTP head capability | open (informational) |
+
 If any merge after this writing, the installer script's patch list should shrink to match.
 
 ## Differences vs `RedHatAI/DeepSeek-V4-Pro-NVFP4-FP8`

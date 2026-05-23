@@ -218,8 +218,11 @@ Pending upstream PR: https://github.com/vllm-project/vllm/pull/43319"
 # Adds ModelOptNvFp4FusedMoE routing to DeepseekV4FP8Config when
 # quantization_config.moe_quant_algo == "NVFP4", plus the
 # trtllm_nvfp4_moe expert kernel.
-# When this PR merges to upstream main, the cherry-pick will become a
-# no-op (the commits will already be on main).
+# PR #42209 merged to upstream main 2026-05-22T14:21:51Z. Our pinned
+# SHA 39910f2b25 is dated 2026-05-22T00:21:48Z — pre-merge — so the
+# cherry-pick is still active at the pin. If you bump VLLM_REF to a
+# SHA after the merge, git merge-base --is-ancestor below will detect
+# the commits are already in HEAD and skip them (no-op).
 echo "==> cherry-picking PR #42209 (NVFP4 MOE for V4-Pro)"
 git remote add sychen52 https://github.com/sychen52/vllm.git 2>/dev/null || true
 git fetch sychen52 nvfp4_dsv4 --quiet
