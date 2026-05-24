@@ -1,0 +1,14 @@
+diff --git a/vllm/models/deepseek_v4/nvidia/mtp.py b/vllm/models/deepseek_v4/nvidia/mtp.py
+--- a/vllm/models/deepseek_v4/nvidia/mtp.py
++++ b/vllm/models/deepseek_v4/nvidia/mtp.py
+@@ -104,8 +104,9 @@ def _mtp_block_is_quantized_on_disk(vllm_config: VllmConfig) -> bool:
+         weight_map = idx.get("weight_map", {})
+
+         # Scan only ``mtp.*`` keys for quantization-scale suffixes. This is
+-        # the minimum information needed; we don't need to read tensor headers.
++        # the minimum information needed; we don't need to read tensor headers.
+         quant_suffixes = (
++            ".scale",   # DSV4 native FP8 block scale convention
+             ".weight_scale",
+             ".weight_scale_inv",
+             ".weight_packed",

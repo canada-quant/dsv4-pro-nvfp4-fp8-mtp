@@ -1,0 +1,36 @@
+diff --git a/vllm/models/deepseek_v4/quant_config.py b/vllm/models/deepseek_v4/quant_config.py
+--- a/vllm/models/deepseek_v4/quant_config.py
++++ b/vllm/models/deepseek_v4/quant_config.py
+@@ -128,8 +128,22 @@ class DeepseekV4FP8Config(Fp8Config):
+                 fused_mapping=self.packed_modules_mapping,
+             ):
+                 return UnquantizedFusedMoEMethod(layer.moe_config)
++            # v12 patch: when prefix matches an MTP layer (idx >=
++            # num_hidden_layers), force the MXFP4 path even if global
++            # moe_quant_algo='NVFP4'. The MTP layer's experts stay in
++            # native MXFP4 form per NVIDIA's V3.2-NVFP4 recipe (entire
++            # MTP layer excluded from NVFP4 transformation).
++            import re as _re
++            _is_mtp_layer = False
++            try:
++                from vllm.config import get_current_vllm_config
++                hf_cfg = get_current_vllm_config().model_config.hf_config
++                n_hidden = int(getattr(hf_cfg, 'num_hidden_layers', 10**9))
++                _m = _re.search(r'\.layers\.(\d+)\.', prefix or '')
++                _is_mtp_layer = bool(_m and int(_m.group(1)) >= n_hidden)
++            except Exception:
++                pass
+             if self.expert_dtype == "fp4":
+-                if self.moe_quant_algo == "NVFP4":
++                if self.moe_quant_algo == "NVFP4" and not _is_mtp_layer:
+                     from vllm.model_executor.layers.quantization.modelopt import (
+                         ModelOptNvFp4FusedMoE,
+                     )
+@@ -138,6 +152,7 @@ class DeepseekV4FP8Config(Fp8Config):
+                         quant_config=self._get_nvfp4_config(),
+                         moe_config=layer.moe_config,
+                     )
++                # MTP layer OR moe_quant_algo!='NVFP4' → MXFP4 path
+                 return Mxfp4MoEMethod(layer.moe_config)
+             # expert_dtype == "fp8": fall through to Fp8Config which
+             # returns Fp8MoEMethod with block-wise float32 scales.

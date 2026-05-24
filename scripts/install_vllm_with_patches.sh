@@ -204,7 +204,7 @@ attention). Load-blocking for V4-Pro without this patch.
 Pending upstream PR: https://github.com/vllm-project/vllm/pull/43290"
 
 apply_patch "patch_43319_mtp_quant_detect.diff" 43319 \
-  "Apply PR #43319: MTP quant detection from safetensors header
+  "Apply PR #43319: MTP quant detection from safetensors header (with .scale suffix support for DSV4 native)
 
 deepseek_v4/nvidia/mtp.py defaulted to assuming MTP is BF16 and
 skipped quant_config wiring. V4-Pro MTP IS quantized on disk (MXFP4
