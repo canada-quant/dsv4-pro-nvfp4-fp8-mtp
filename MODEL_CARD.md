@@ -31,6 +31,7 @@ Trunk MoE quantized from native MXFP4 → NVFP4 group=16 (E4M3 block scales + FP
 | **AIME 2024 thinking=high** | **21/30 = 70.00%** raw (full 30 problems, max_tokens=60000, **zero truncations**) |
 | **GSM8K** | **1274/1319 = 96.59%** (full n=1319, 0 truncations, 270s wallclock) |
 | **HumanEval / HumanEval+** | **0.951 / 0.902** pass@1 (EvalPlus, greedy) |
+| **MBPP / MBPP+** | **0.929 / 0.778** pass@1 (EvalPlus, greedy) |
 | **Total parameters** | 1,598.84 B / 49.60 B active per token |
 | **Disk size** | 913 GiB (64 sharded safetensors) |
 | **Target hardware** | 8× B300 SXM6 AC, TP=8 + EP |
@@ -61,8 +62,10 @@ The matched-300 comparison uses identical prompts, identical sampling params (gr
 | GSM8K strict 8-shot (full n=1319, 0 truncations) | **0.9659** (CI [0.9547, 0.9744]) | 0.9181 | 0.910 (self-report) |
 | HumanEval pass@1 (EvalPlus, greedy) | **0.951** | 0.915 | 0.896 |
 | HumanEval+ pass@1 (EvalPlus, greedy) | **0.902** | 0.854 | 0.860 |
+| MBPP pass@1 (EvalPlus, greedy) | **0.929** | not reported | not reported |
+| MBPP+ pass@1 (EvalPlus, greedy) | **0.778** | not reported | not reported |
+| IFEval prompt_level_strict | _in progress_ | 0.8540 | 0.8207 |
 | MMLU-Pro 5-shot (full n=12,032) | _queued_ | 0.8113 | not reported |
-| IFEval prompt_level_strict | _queued_ | 0.8540 | 0.8207 |
 
 V4-Pro is the more capable base model. V4-Flash benchmarks are for context, not strict comparison.
 

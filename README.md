@@ -26,8 +26,10 @@ v12 is at parity with the native checkpoint baseline. Earlier attempts perturbed
 | GSM8K matched n=300, NVFP4 vs source MXFP4 | 0.9867 vs 0.9900 (1 strict-loss) | n/a | n/a |
 | HumanEval pass@1 (EvalPlus, greedy) | **0.951** | 0.915 | 0.896 |
 | HumanEval+ pass@1 (EvalPlus, greedy) | **0.902** | 0.854 | 0.860 |
+| MBPP pass@1 (EvalPlus, greedy) | **0.929** | not reported | not reported |
+| MBPP+ pass@1 (EvalPlus, greedy) | **0.778** | not reported | not reported |
+| IFEval prompt_level_strict | _in progress_ | 0.8540 | 0.8207 |
 | MMLU-Pro 5-shot (full n=12,032) | _queued_ | 0.8113 | not reported |
-| IFEval prompt_level_strict | _queued_ | 0.8540 | 0.8207 |
 
 ### Throughput (MTP n=1 + cuda graphs, `max_model_len=65536`)
 
