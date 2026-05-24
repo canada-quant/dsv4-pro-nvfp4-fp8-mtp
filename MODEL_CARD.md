@@ -25,17 +25,16 @@ Trunk MoE quantized from native MXFP4 → NVFP4 group=16 (E4M3 block scales + FP
 
 | | |
 |---|---|
-| **MTP draft acceptance** | **91.45%** (n=1, 93.72% cumulative across all benchmarks) |
-| **Peak throughput** | **2013 tok/s** aggregate at c=64 (+25% vs no-MTP) |
-| **Single-stream with MTP** | **136 tok/s** at c=1 (+81% vs no-MTP baseline) |
-| **GSM8K** | **96.89%** (full n=1319, 0 truncations) |
-| **AIME 2024** | **70.00% raw / 72.41% non-trunc** (thinking=high) |
-| **HumanEval / HumanEval+** | **95.1% / 89.6%** (EvalPlus, greedy) |
-| **MMLU-Pro 5-shot** | **0.8164 ± 0.0034** (full n=12,032) |
+| **MTP draft acceptance** | **91.21%** (focused n=1 probe), **92.83%** cumulative across MTP probe + AIME thinking=high (37,341 / 40,225 drafts accepted) |
+| **Peak throughput** | **3,005 tok/s** aggregate at c=128; **1,927 tok/s** at c=64 |
+| **Single-stream with MTP** | **139 tok/s** at c=1 (MTP n=1 + cuda graphs) |
+| **AIME 2024 thinking=high** | **21/30 = 70.00%** raw (full 30 problems, max_tokens=60000, **zero truncations**) |
 | **Total parameters** | 1,598.84 B / 49.60 B active per token |
 | **Disk size** | 913 GiB (64 sharded safetensors) |
 | **Target hardware** | 8× B300 SXM6 AC, TP=8 + EP |
 | **License** | MIT (inherits from base) |
+
+GSM8K full and additional standard suites (MMLU-Pro, HumanEval, IFEval) are queued; numbers added when complete.
 
 ---
 
@@ -56,16 +55,13 @@ The matched-300 comparison uses identical prompts, identical sampling params (gr
 
 | Benchmark | This artifact (V4-Pro NVFP4) | V4-Flash NVFP4 (predecessor) | RedHat V4-Flash NVFP4 |
 |---|---|---|---|
-| GSM8K strict 8-shot (full n=1319) | **0.9689** | 0.9181 | 0.910 (self-report) |
-| AIME 2024 thinking=high (n=30, raw) | **0.7000** | 0.8333 | 0.9000 |
-| MMLU-Pro 5-shot (full n=12,032) | **0.8164 ± 0.0034** | 0.8113 | not reported |
-| HumanEval pass@1 (EvalPlus) | **0.951** | 0.915 | 0.896 |
-| HumanEval+ pass@1 (EvalPlus) | **0.896** | 0.854 | 0.860 |
-| IFEval prompt_level_strict | 0.8484 ± 0.0154 | 0.8540 | 0.8207 |
+| AIME 2024 thinking=high (n=30, raw) | **0.7000** (full, no truncation) | 0.8333 | 0.9000 |
+| GSM8K strict 8-shot (full n=1319) | _in progress_ | 0.9181 | 0.910 (self-report) |
+| MMLU-Pro 5-shot (full n=12,032) | _queued_ | 0.8113 | not reported |
+| HumanEval pass@1 (EvalPlus) | _queued_ | 0.915 | 0.896 |
+| IFEval prompt_level_strict | _queued_ | 0.8540 | 0.8207 |
 
 V4-Pro is the more capable base model. V4-Flash benchmarks are for context, not strict comparison.
-
-The historical "94.09%" GSM8K number in earlier drafts was a bench string-match artifact (`75.00` vs gold `75`); numeric-match scoring restores the +3pt gap uniformly. See [`docs/findings/gsm8k_scoring_correction.md`](docs/findings/gsm8k_scoring_correction.md).
 
 ---
 
@@ -75,9 +71,9 @@ MTP draft acceptance under production config (TP=8 + EP, cuda graphs ON, `flashi
 
 | Setting | Acceptance | Drafts emitted | Drafts accepted |
 |---|---|---|---|
-| **MTP n=1 (this artifact)** | **91.45%** | 3,275 | 2,995 |
+| **MTP n=1 focused probe (this artifact, 20 prompts)** | **91.21%** | 3,300 | 3,010 |
 | Native MXFP4 V4-Pro + fork docker (reference) | 91.07% – 91.94% | matching range | matching range |
-| Cumulative across all benchmarks (GSM8K + AIME + MTP probe) | **93.72%** | 146,937 | 137,709 |
+| **Cumulative — MTP probe + AIME thinking=high full (30 reasoning trajectories)** | **92.83%** | 40,225 | 37,341 |
 
 The earlier v0.2 / v0.3 / v0.4 candidate artifacts measured 2.65% – 3.33% — they all perturbed the MTP block in some way (NVFP4 experts in v0.2; BF16 dequant in v0.3/v0.4). v12 leaves `mtp.0.*` byte-identical to native and achieves parity with the native baseline.
 
@@ -87,14 +83,16 @@ The earlier v0.2 / v0.3 / v0.4 candidate artifacts measured 2.65% – 3.33% — 
 
 Single-node 8× B300 SXM6 AC. Same `vllm serve` config (only `--moe-backend` and the artifact differ).
 
-| Operating point | This artifact (NVFP4 + flashinfer + MTP) | Native MXFP4 + deep_gemm (no MTP) | Δ |
-|---|---|---|---|
-| **c=1 single-stream** | **136.4 tok/s** | 75.3 tok/s | **+81%** |
-| **c=16 batched aggregate** (64 prompts) | **755.0 tok/s** | 405.9 tok/s | **+86%** |
-| **c=64 batched aggregate** (128 prompts, peak) | **2013.8 tok/s** | not measured | — |
-| **c=128 batched aggregate** (256 prompts) | **3452.9 tok/s** | 1151.1 | **+200%** |
+Measured at `max_model_len=65536`, `max_tokens=128` per prompt, batched at the operating point's concurrency.
 
-NVFP4 + working MTP is much faster than the upstream-recipe-default native MXFP4 + no-MTP path. **Production sweet spot: c=32–128** depending on workload tail-latency tolerance.
+| Operating point | This artifact (NVFP4 + flashinfer + MTP) |
+|---|---|
+| **c=1 single-stream** | **139.3 tok/s** |
+| **c=16 batched aggregate** (64 prompts) | **672.6 tok/s** |
+| **c=64 batched aggregate** (256 prompts) | **1,927.3 tok/s** |
+| **c=128 batched aggregate** (512 prompts) | **3,004.8 tok/s** |
+
+**Production sweet spot: c=32–128** depending on workload tail-latency tolerance.
 
 ---
 
@@ -111,7 +109,7 @@ vllm serve canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP \
   --enable-expert-parallel \
   --moe-backend flashinfer_trtllm \
   --speculative-config '{"method":"mtp","num_speculative_tokens":1}' \
-  --max-model-len 32768
+  --max-model-len 65536
 ```
 
 ⚠️ **No `--enforce-eager`** — cuda graphs in `FULL_AND_PIECEWISE` mode are required for production decode throughput. Cold start is ~12-15 minutes (flashinfer FP4 MoE JIT + torch.compile + cudagraph capture).
@@ -183,7 +181,7 @@ When upstream merges, the local patch set shrinks.
 
 ## The fix stack — how we got from 3% to 91%
 
-v0.2/v0.3/v0.4 all measured ~3% MTP acceptance. v12 hits 91.45%. Five changes were needed together:
+v0.2/v0.3/v0.4 all measured ~3% MTP acceptance. v12 hits 91.21% focused / 92.83% cumulative on full reasoning workloads. Five changes were needed together:
 
 1. **Conversion**: pass `mtp.*` tensors through byte-identical to native (no transcoding, no dequant) — matches NVIDIA's V3.2-NVFP4 recipe.
 2. **vLLM `_mtp_block_is_quantized_on_disk` fix**: detector was missing `.scale` (DSV4 native FP8 block scale suffix) from its `quant_suffixes` list. False-negative → MTP block built unquantized → `e_proj.weight_scale_inv` never registered → `KeyError` at load → all earlier attempts worked around by **dequantizing mtp.0 to BF16**, which broke MTP. One-line fix is THE load-bearing patch.
@@ -232,7 +230,7 @@ Hardware: 1× B300 (288 GB HBM3e) for conversion; 8× B300 for serving.
 
 ```bibtex
 @misc{canada-quant-dsv4-pro-nvfp4-fp8-mtp-2026,
-  title  = {DeepSeek-V4-Pro NVFP4-FP8 with MTP at 91.45\% acceptance on vLLM mainline},
+  title  = {DeepSeek-V4-Pro NVFP4-FP8 with MTP at 91--93\% acceptance on vLLM mainline},
   author = {Canada Quant},
   year   = {2026},
   publisher = {Hugging Face},

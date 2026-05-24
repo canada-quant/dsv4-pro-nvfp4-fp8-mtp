@@ -10,35 +10,34 @@ Routed MoE experts converted MXFP4 group=32 → NVFP4 group=16 (E4M3 block scale
 
 | Metric | Value |
 |---|---|
-| **MTP n=1 acceptance** | **91.45%** (2995/3275 tokens on 20-prompt probe) |
+| **MTP n=1 acceptance, focused probe (20 prompts)** | **91.21%** (3010/3300 drafts) |
+| **Cumulative, MTP probe + AIME thinking=high (full reasoning)** | **92.83%** (37,341/40,225) |
 | Reference: fork docker + native MXFP4 | 91.07% – 91.94% |
 | Earlier conversion attempts (v0.2/v0.3/v0.4) | 2.65% – 3.33% |
 
 v12 is at parity with the native checkpoint baseline. Earlier attempts perturbed `mtp.0` in some way (NVFP4 experts in v0.2; BF16 dequant in v0.3/v0.4) and tripped a separate `_mtp_block_is_quantized_on_disk` detector bug in vLLM. v12 fixes both.
 
-### Quality (MTP off, greedy temperature 0)
+### Quality (greedy temperature 0)
 
 | Benchmark | This artifact (NVFP4) | V4-Flash NVFP4 predecessor | RedHat V4-Flash NVFP4 |
 |---|---|---|---|
-| GSM8K strict 8-shot (full n=1319, 0 truncation) | **0.9689** | 0.9181 | 0.910 (self-report) |
+| **AIME 2024 thinking=high** (n=30, max_tokens=60000, 0 truncations) | **21/30 = 70.00%** | 0.8333 | 0.9000 |
+| GSM8K strict 8-shot (full n=1319) | _in progress_ | 0.9181 | 0.910 (self-report) |
 | GSM8K matched n=300, NVFP4 vs source MXFP4 | 0.9867 vs 0.9900 (1 strict-loss) | n/a | n/a |
-| AIME 2024 thinking=high (n=30) | 0.6667 raw / 0.6897 non-truncated | 0.8333 / 0.9600 | 0.9000 |
-| MMLU-Pro 5-shot (full n=12,032) | **0.8164 ± 0.0034** | 0.8113 | not reported |
-| HumanEval pass@1 (EvalPlus, greedy) | **0.951** | 0.915 | 0.896 |
-| HumanEval+ pass@1 (EvalPlus, greedy) | **0.896** | 0.854 | 0.860 |
-| IFEval prompt_level_strict | 0.8484 ± 0.0154 | 0.8540 | 0.8207 |
+| MMLU-Pro 5-shot (full n=12,032) | _queued_ | 0.8113 | not reported |
+| HumanEval pass@1 (EvalPlus) | _queued_ | 0.915 | 0.896 |
+| IFEval prompt_level_strict | _queued_ | 0.8540 | 0.8207 |
 
-GSM8K full at **96.89%** under proper numeric scoring (the older 94.09% number was a bench string-match artifact — `75.00 vs 75`; see [`docs/findings/gsm8k_scoring_correction.md`](docs/findings/gsm8k_scoring_correction.md)).
+### Throughput (MTP n=1 + cuda graphs, `max_model_len=65536`)
 
-### Throughput (MTP off)
+| Operating point | Aggregate tok/s |
+|---|---|
+| c=1 single-stream | **139.3** |
+| c=16 batched (64 prompts) | **672.6** |
+| c=64 batched (256 prompts) | **1,927.3** |
+| c=128 batched (512 prompts) | **3,004.8** |
 
-| Operating point | This artifact (NVFP4 + flashinfer) | Native MXFP4 + deep_gemm | Δ |
-|---|---|---|---|
-| c=16 batched aggregate (64 prompts, output tok/s) | **572.8** | 405.9 | **+41.1%** |
-| c=64 batched aggregate (peak, 128 prompts) | **1606.3** | not measured at c=64 | — |
-| c=128 batched aggregate (256 prompts) | 1151.1 | not measured at c=128 | — |
-
-NVFP4 lead vs the upstream-recipe-default native MXFP4 path widens to **+41% aggregate at c=16**. Throughput peaks around c=64 (1606 tok/s aggregate) — **production sweet spot is c=32-64**. Full backend × format matrix + scaling curve in [`docs/findings/backend_format_matrix.md`](docs/findings/backend_format_matrix.md) and [`docs/findings/throughput_scaling.md`](docs/findings/throughput_scaling.md).
+Throughput scales smoothly through c=128. **Production sweet spot c=32–128** depending on tail-latency tolerance.
 
 ## Quick start
 
@@ -59,7 +58,7 @@ vllm serve /scratch/v4-pro-nvfp4 \
   --tensor-parallel-size 8 --enable-expert-parallel \
   --moe-backend flashinfer_trtllm \
   --speculative-config '{"method":"mtp","num_speculative_tokens":1}' \
-  --max-model-len 32768
+  --max-model-len 65536
 ```
 
 No `--enforce-eager`. Cold start (flashinfer FP4 MoE JIT + torch.compile + cudagraph capture) is ~12-15 minutes. Steady-state MTP: ~91% acceptance.
