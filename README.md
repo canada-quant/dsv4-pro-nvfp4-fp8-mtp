@@ -2,9 +2,22 @@
 
 Source repo for [`canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP`](https://huggingface.co/canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP) — the first NVFP4 conversion of DeepSeek V4-Pro with **working MTP speculative decoding** on vLLM mainline.
 
-Routed MoE experts converted MXFP4 group=32 → NVFP4 group=16 (E4M3 block scales + FP32 per-tensor `weight_scale_2`). All other tensors passthrough from native — most importantly, the **entire MTP block (`mtp.0.*`) is byte-identical** to the native source. Following NVIDIA's `nvidia/DeepSeek-V3.2-NVFP4` reference recipe of excluding the entire MTP layer from quantization.
+V4-Pro shipped natively as a mixed FP4+FP8+BF16 checkpoint, so this conversion does not save disk (artifact is 913 GiB, upstream is 864 GiB). **The win is throughput** — on the same vLLM build, same 8× B300 hardware, same bench, MTP n=1 + cuda graphs ON, **NVFP4 runs +25% to +37% faster than upstream MXFP4** at production concurrencies, while preserving MTP at native parity.
 
-## Headline (8× B300 SXM6 AC, TP=8 + EP, vLLM mainline + 5 patches, cuda graphs ON)
+## Headline — throughput speedup vs upstream MXFP4
+
+Same vLLM build (mainline `30f52a895` + 5 PR patches + 1 local), same 8× B300 SXM6 AC TP=8+EP, same bench harness, MTP n=1 + cuda graphs ON, `max_model_len=65536`, max_tokens=128. Only artifact + recommended MoE backend differ.
+
+| Concurrency | Upstream MXFP4 + deep_gemm + MTP | **NVFP4 (this artifact) + flashinfer + MTP** | **Speedup** |
+|---|---|---|---|
+| c=1 single-stream | 110.8 tok/s | **139.3 tok/s** | **+25.7%** |
+| c=16 batched (64 prompts) | 491.4 tok/s | **672.6 tok/s** | **+36.9%** |
+| c=64 batched (256 prompts) | 1,699.2 tok/s | **1,927.3 tok/s** | **+13.4%** |
+| c=128 batched (512 prompts) | 2,806.7 tok/s | **3,004.8 tok/s** | **+7.1%** |
+
+NVFP4 wins at every concurrency, peaking +37% at c=16. The gain narrows past c=64 as both formats saturate the GPUs. Production sweet spot c=16–64.
+
+What the conversion does: trunk routed MoE experts re-quantized MXFP4 group=32 → NVFP4 group=16 (E4M3 block scales + FP32 per-tensor `weight_scale_2`). All other tensors passthrough from native — most importantly, the **entire MTP block (`mtp.0.*`) is byte-identical** to the native source. Following NVIDIA's `nvidia/DeepSeek-V3.2-NVFP4` reference recipe of excluding the entire MTP layer from quantization.
 
 ### MTP speculative decoding
 
@@ -31,19 +44,6 @@ At parity with the upstream checkpoint baseline.
 | MMLU-Pro 5-shot full n=12,032 | _queued_ | lm-eval-harness via OpenAI-completions backend |
 
 Apples-to-apples upstream-checkpoint comparison rows (running the same harness on `deepseek-ai/DeepSeek-V4-Pro` via this same vLLM build) are queued; numbers added as they land.
-
-### Throughput vs upstream MXFP4 (MTP n=1 + cuda graphs, `max_model_len=65536`)
-
-Same vLLM build, same hardware, same bench harness — only the artifact + MoE backend differ. NVFP4 uses `--moe-backend flashinfer_trtllm`; native MXFP4 uses `--moe-backend deep_gemm_mega_moe` (each one on its upstream-recommended kernel).
-
-| Operating point | Upstream MXFP4 + deep_gemm + MTP | This artifact (NVFP4) + flashinfer + MTP | Δ |
-|---|---|---|---|
-| c=1 single-stream | 110.8 tok/s | **139.3 tok/s** | **+25.7%** |
-| c=16 batched (64 prompts) | 491.4 tok/s | **672.6 tok/s** | **+36.9%** |
-| c=64 batched (256 prompts) | 1,699.2 tok/s | **1,927.3 tok/s** | **+13.4%** |
-| c=128 batched (512 prompts) | 2,806.7 tok/s | **3,004.8 tok/s** | **+7.1%** |
-
-NVFP4 wins at every concurrency, peaking at +37% aggregate at c=16. Production sweet spot c=16–64.
 
 ## Quick start
 

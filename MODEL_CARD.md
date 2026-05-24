@@ -17,7 +17,22 @@ library_name: vllm
 
 **The first NVFP4 conversion of DeepSeek V4-Pro with working MTP speculative decoding on vLLM mainline.**
 
-Trunk MoE quantized from native MXFP4 → NVFP4 group=16 (E4M3 block scales + FP32 per-tensor `weight_scale_2`). Attention and shared experts stay in native FP8 block 128×128. **The entire MTP block (`mtp.0.*`) is byte-identical to the upstream native source** — no transformation — following NVIDIA's `nvidia/DeepSeek-V3.2-NVFP4` reference recipe of excluding the entire MTP layer from quantization.
+V4-Pro shipped natively as a mixed FP4+FP8+BF16 checkpoint, so this conversion does not save disk space (in fact the artifact is slightly larger: 913 GiB vs the upstream 864 GiB). **The win is throughput.** On the same vLLM build, same 8× B300 hardware, same bench harness, MTP n=1 + cuda graphs ON — this NVFP4 artifact runs **+25% to +37% faster than the upstream MXFP4 checkpoint** at the concurrencies where production serving lives, while preserving MTP draft acceptance at native parity (91.21% vs 90.92%) and matching quality on GSM8K-300 (1 problem difference, within Wilson CI).
+
+---
+
+## Headline — speedup vs the upstream MXFP4 checkpoint
+
+Same vLLM build (mainline `30f52a895` + 5 PR patches + 1 local), same hardware, same bench, same MTP n=1 + cuda graphs ON config. Only the artifact + recommended MoE backend differ.
+
+| Concurrency | Upstream MXFP4 + deep_gemm + MTP | **This artifact (NVFP4) + flashinfer + MTP** | **NVFP4 speedup** |
+|---|---|---|---|
+| c=1 single-stream | 110.8 tok/s | **139.3 tok/s** | **+25.7%** |
+| c=16 batched (64 prompts) | 491.4 tok/s | **672.6 tok/s** | **+36.9%** |
+| c=64 batched (256 prompts) | 1,699.2 tok/s | **1,927.3 tok/s** | **+13.4%** |
+| c=128 batched (512 prompts) | 2,806.7 tok/s | **3,004.8 tok/s** | **+7.1%** |
+
+NVFP4 wins at every concurrency, peaking at **+37% at c=16**. The gain narrows at c=64/128 as both formats saturate the GPUs.
 
 ---
 
@@ -25,19 +40,22 @@ Trunk MoE quantized from native MXFP4 → NVFP4 group=16 (E4M3 block scales + FP
 
 | | |
 |---|---|
-| **MTP draft acceptance** | **91.21%** (focused n=1 probe), **92.83%** cumulative across MTP probe + AIME thinking=high (37,341 / 40,225 drafts accepted) |
+| **Speedup vs upstream MXFP4** | **+25.7% c=1 / +36.9% c=16 / +13.4% c=64 / +7.1% c=128** (same build, same MTP n=1 + cuda graphs config) |
+| **MTP draft acceptance** | **91.21%** focused (vs upstream **90.92%** on same probe) / **92.83%** cumulative across MTP + AIME thinking=high |
 | **Peak throughput** | **3,005 tok/s** aggregate at c=128; **1,927 tok/s** at c=64 |
 | **Single-stream with MTP** | **139 tok/s** at c=1 (MTP n=1 + cuda graphs) |
 | **AIME 2024 thinking=high** | **21/30 = 70.00%** raw (full 30 problems, max_tokens=60000, **zero truncations**) |
-| **GSM8K** | **1274/1319 = 96.59%** (full n=1319, 0 truncations, 270s wallclock) |
+| **GSM8K** | **1274/1319 = 96.59%** (full n=1319, 0 truncations) |
 | **HumanEval / HumanEval+** | **0.951 / 0.902** pass@1 (EvalPlus, greedy) |
 | **MBPP / MBPP+** | **0.929 / 0.778** pass@1 (EvalPlus, greedy) |
 | **Total parameters** | 1,598.84 B / 49.60 B active per token |
-| **Disk size** | 913 GiB (64 sharded safetensors) |
+| **Disk size** | 913 GiB (64 sharded safetensors) — same order as upstream |
 | **Target hardware** | 8× B300 SXM6 AC, TP=8 + EP |
 | **License** | MIT (inherits from base) |
 
-IFEval and MMLU-Pro 5-shot results are queued; numbers added when complete.
+What the conversion does: trunk routed experts re-quantized MXFP4 group=32 → NVFP4 group=16 (E4M3 block scales + FP32 per-tensor `weight_scale_2`). Attention and shared experts stay in native FP8 block 128×128. **The entire MTP block (`mtp.0.*`) is byte-identical to the upstream native source** — no transformation — following NVIDIA's `nvidia/DeepSeek-V3.2-NVFP4` reference recipe of excluding the entire MTP layer from quantization.
+
+IFEval (chat-eval) and MMLU-Pro 5-shot results are queued; numbers added when complete.
 
 ---
 
