@@ -41,33 +41,37 @@ GSM8K full and additional standard suites (MMLU-Pro, HumanEval, IFEval) are queu
 
 ---
 
-## Quality vs native MXFP4
+## Quality vs the native source (compression-loss check)
 
-NVFP4 conversion is a **lossless format change** on the trunk routed experts. Numbers measured on identical hardware, identical serving config (only the trunk-expert format differs).
+NVFP4 conversion is a **lossless format change** on the trunk routed experts: MXFP4 group=32 → NVFP4 group=16. Everything else (attention, shared experts, the entire MTP block) is byte-passthrough. Numbers measured on identical hardware, identical serving config, identical prompts, identical sampling params (greedy, temp=0) — only the trunk-expert format differs.
 
-| Benchmark | Native MXFP4 (`deepseek-ai/DeepSeek-V4-Pro`) | This artifact (NVFP4) | Δ |
+| Benchmark | Native source `deepseek-ai/DeepSeek-V4-Pro` (MXFP4) | This artifact (NVFP4) | Δ |
 |---|---|---|---|
-| GSM8K matched n=300 | 0.9900 (297/300) | **0.9867** (296/300) | -1 problem (within CI) |
-| Forensic byte-equivalence of `mtp.0.{e_proj, h_proj}` dequant | n/a | 100% (verified per-tensor, 51M elements) | — |
+| GSM8K matched n=300 | 0.9900 (297/300) | **0.9867** (296/300) | -1 problem (within Wilson CI) |
+| MTP draft acceptance (n=1, 20-prompt probe) | 91.07% – 91.94% | **91.21%** | within noise |
 
-The matched-300 comparison uses identical prompts, identical sampling params (greedy, temp=0). Only 1 problem flips strict; Wilson CIs overlap fully.
+The matched-300 NVFP4-vs-source check flips exactly 1 of 300 problems. Wilson CIs overlap fully. The MTP draft head is at parity with the native checkpoint.
 
 ---
 
-## Quality vs predecessor and reference NVFP4 conversions
+## Apples-to-apples vs the upstream MXFP4 checkpoint
 
-| Benchmark | This artifact (V4-Pro NVFP4) | V4-Flash NVFP4 (predecessor) | RedHat V4-Flash NVFP4 |
+These numbers are measured by **us**, on **our** vLLM build, on **our** 8× B300 hardware, with **identical** bench harness + sampling parameters — only the artifact differs. The upstream checkpoint is `deepseek-ai/DeepSeek-V4-Pro` (native MXFP4 trunk + FP8 attention + native MTP).
+
+| Benchmark | Upstream MXFP4 (`deepseek-ai/DeepSeek-V4-Pro`) | This artifact (NVFP4) | Δ |
 |---|---|---|---|
-| AIME 2024 thinking=high (n=30, raw) | **0.7000** (full, no truncation) | 0.8333 | 0.9000 |
-| GSM8K strict 8-shot (full n=1319, 0 truncations) | **0.9659** (CI [0.9547, 0.9744]) | 0.9181 | 0.910 (self-report) |
-| HumanEval pass@1 (EvalPlus, greedy) | **0.951** | 0.915 | 0.896 |
-| HumanEval+ pass@1 (EvalPlus, greedy) | **0.902** | 0.854 | 0.860 |
-| MBPP pass@1 (EvalPlus, greedy) | **0.929** | not reported | not reported |
-| MBPP+ pass@1 (EvalPlus, greedy) | **0.778** | not reported | not reported |
-| IFEval prompt_level_strict | _in progress_ | 0.8540 | 0.8207 |
-| MMLU-Pro 5-shot (full n=12,032) | _queued_ | 0.8113 | not reported |
+| MTP draft acceptance (n=1, 20-prompt probe) | 91.07% – 91.94% | **91.21%** | within noise |
+| GSM8K matched n=300 (chat greedy, max_tokens=2048) | 0.9900 (297/300) | **0.9867** (296/300) | -1 problem (Wilson CIs overlap) |
+| GSM8K full n=1319 | _measurement in progress_ | **0.9659** (CI [0.9547, 0.9744]) | TBD |
+| AIME 2024 thinking=high (n=30, max_tokens=60000) | _measurement in progress_ | **21/30 = 70.00%** (0 truncations) | TBD |
+| HumanEval pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.951** | TBD |
+| HumanEval+ pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.902** | TBD |
+| MBPP pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.929** | TBD |
+| MBPP+ pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.778** | TBD |
+| IFEval prompt_level_strict | _measurement in progress_ | _in progress_ | TBD |
+| MMLU-Pro 5-shot full n=12,032 | _measurement queued_ | _queued_ | TBD |
 
-V4-Pro is the more capable base model. V4-Flash benchmarks are for context, not strict comparison.
+The matched-300 GSM8K + MTP probe are the only direct apples-to-apples we have completed so far. The remaining rows are queued — we serve the upstream `deepseek-ai/DeepSeek-V4-Pro` artifact on this same vLLM build with `--moe-backend deep_gemm_mega_moe --speculative-config '{"method":"mtp","num_speculative_tokens":1}'` and re-run the same probes. Numbers added when complete.
 
 ---
 

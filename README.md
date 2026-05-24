@@ -17,19 +17,21 @@ Routed MoE experts converted MXFP4 group=32 → NVFP4 group=16 (E4M3 block scale
 
 v12 is at parity with the native checkpoint baseline. Earlier attempts perturbed `mtp.0` in some way (NVFP4 experts in v0.2; BF16 dequant in v0.3/v0.4) and tripped a separate `_mtp_block_is_quantized_on_disk` detector bug in vLLM. v12 fixes both.
 
-### Quality (greedy temperature 0)
+### Quality (chat greedy temperature 0, this artifact)
 
-| Benchmark | This artifact (NVFP4) | V4-Flash NVFP4 predecessor | RedHat V4-Flash NVFP4 |
-|---|---|---|---|
-| **AIME 2024 thinking=high** (n=30, max_tokens=60000, 0 truncations) | **21/30 = 70.00%** | 0.8333 | 0.9000 |
-| GSM8K strict 8-shot (full n=1319, 0 truncations) | **0.9659** (CI [0.9547, 0.9744]) | 0.9181 | 0.910 (self-report) |
-| GSM8K matched n=300, NVFP4 vs source MXFP4 | 0.9867 vs 0.9900 (1 strict-loss) | n/a | n/a |
-| HumanEval pass@1 (EvalPlus, greedy) | **0.951** | 0.915 | 0.896 |
-| HumanEval+ pass@1 (EvalPlus, greedy) | **0.902** | 0.854 | 0.860 |
-| MBPP pass@1 (EvalPlus, greedy) | **0.929** | not reported | not reported |
-| MBPP+ pass@1 (EvalPlus, greedy) | **0.778** | not reported | not reported |
-| IFEval prompt_level_strict | _in progress_ | 0.8540 | 0.8207 |
-| MMLU-Pro 5-shot (full n=12,032) | _queued_ | 0.8113 | not reported |
+| Benchmark | This artifact (NVFP4) | Notes |
+|---|---|---|
+| GSM8K full n=1319 | **0.9659** (CI [0.9547, 0.9744]) | chat greedy, max_tokens=2048, 0 truncations |
+| GSM8K matched n=300 vs upstream MXFP4 | **0.9867** (296/300) vs upstream 0.9900 (297/300) | 1 strict-loss problem, Wilson CIs overlap |
+| AIME 2024 thinking=high (n=30) | **21/30 = 70.00%** | max_tokens=60000, 0 truncations |
+| HumanEval pass@1 | **0.951** | EvalPlus greedy |
+| HumanEval+ pass@1 | **0.902** | EvalPlus greedy |
+| MBPP pass@1 | **0.929** | EvalPlus greedy |
+| MBPP+ pass@1 | **0.778** | EvalPlus greedy |
+| IFEval prompt_level_strict | _in progress_ | lm-eval-harness via OpenAI-completions backend |
+| MMLU-Pro 5-shot full n=12,032 | _queued_ | lm-eval-harness via OpenAI-completions backend |
+
+Apples-to-apples upstream-checkpoint comparison rows (running the same harness on `deepseek-ai/DeepSeek-V4-Pro` via this same vLLM build) are queued; numbers added as they land.
 
 ### Throughput (MTP n=1 + cuda graphs, `max_model_len=65536`)
 
