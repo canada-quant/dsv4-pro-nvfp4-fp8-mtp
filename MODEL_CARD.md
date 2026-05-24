@@ -37,7 +37,7 @@ Trunk MoE quantized from native MXFP4 → NVFP4 group=16 (E4M3 block scales + FP
 | **Target hardware** | 8× B300 SXM6 AC, TP=8 + EP |
 | **License** | MIT (inherits from base) |
 
-GSM8K full and additional standard suites (MMLU-Pro, HumanEval, IFEval) are queued; numbers added when complete.
+IFEval and MMLU-Pro 5-shot results are queued; numbers added when complete.
 
 ---
 
