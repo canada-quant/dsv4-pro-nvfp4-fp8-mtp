@@ -68,7 +68,7 @@ These numbers are measured by **us**, on **our** vLLM build, on **our** 8× B300
 | HumanEval+ pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.902** | TBD |
 | MBPP pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.929** | TBD |
 | MBPP+ pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.778** | TBD |
-| IFEval prompt_level_strict | _measurement in progress_ | _in progress_ | TBD |
+| IFEval prompt_level_strict | _chat-eval rerun queued_ | _chat-eval rerun queued_ | TBD (initial completions-mode pass measured 0.244 on both; not a fair number — V4-Pro Instruct requires chat-template) |
 | MMLU-Pro 5-shot full n=12,032 | _measurement queued_ | _queued_ | TBD |
 
 The matched-300 GSM8K + MTP probe are the only direct apples-to-apples we have completed so far. The remaining rows are queued — we serve the upstream `deepseek-ai/DeepSeek-V4-Pro` artifact on this same vLLM build with `--moe-backend deep_gemm_mega_moe --speculative-config '{"method":"mtp","num_speculative_tokens":1}'` and re-run the same probes. Numbers added when complete.
@@ -89,18 +89,21 @@ At parity with the native checkpoint baseline. The MTP block is byte-identical t
 
 ---
 
-## Throughput vs native MXFP4
+## Throughput vs the upstream MXFP4 checkpoint
 
-Single-node 8× B300 SXM6 AC. Same `vllm serve` config (only `--moe-backend` and the artifact differ).
+Single-node 8× B300 SXM6 AC, same vLLM build (mainline `30f52a895` + 5 PR patches + 1 local), same bench harness, MTP n=1 + cuda graphs ON, `--max-model-len 65536`, `max_tokens=128` per prompt. Only the artifact + `--moe-backend` differ:
 
-Measured at `max_model_len=65536`, `max_tokens=128` per prompt, batched at the operating point's concurrency.
+- **This artifact**: `--moe-backend flashinfer_trtllm` (required for NVFP4)
+- **Upstream MXFP4** (`deepseek-ai/DeepSeek-V4-Pro`): `--moe-backend deep_gemm_mega_moe` (the upstream-recommended kernel for native MXFP4)
 
-| Operating point | This artifact (NVFP4 + flashinfer + MTP) |
-|---|---|
-| **c=1 single-stream** | **139.3 tok/s** |
-| **c=16 batched aggregate** (64 prompts) | **672.6 tok/s** |
-| **c=64 batched aggregate** (256 prompts) | **1,927.3 tok/s** |
-| **c=128 batched aggregate** (512 prompts) | **3,004.8 tok/s** |
+| Operating point | Upstream MXFP4 (`deepseek-ai/DeepSeek-V4-Pro`) | This artifact (NVFP4) | Δ |
+|---|---|---|---|
+| **c=1 single-stream** | _measurement in progress_ | **139.3 tok/s** | TBD |
+| **c=16 batched aggregate** (64 prompts) | _measurement in progress_ | **672.6 tok/s** | TBD |
+| **c=64 batched aggregate** (256 prompts) | _measurement in progress_ | **1,927.3 tok/s** | TBD |
+| **c=128 batched aggregate** (512 prompts) | _measurement in progress_ | **3,004.8 tok/s** | TBD |
+
+Both configs use MTP n=1 + cuda graphs ON. Native MXFP4 baseline numbers are the active measurement currently running. Earlier scouting runs (pre-v12, different config) showed +41% NVFP4 advantage at c=16 batched and +81% advantage at c=1 single-stream — the proper same-vLLM apples-to-apples table will land here when the native serve completes.
 
 **Production sweet spot: c=32–128** depending on workload tail-latency tolerance.
 

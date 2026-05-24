@@ -27,21 +27,23 @@ At parity with the native checkpoint baseline.
 | HumanEval+ pass@1 | **0.902** | EvalPlus greedy |
 | MBPP pass@1 | **0.929** | EvalPlus greedy |
 | MBPP+ pass@1 | **0.778** | EvalPlus greedy |
-| IFEval prompt_level_strict | _in progress_ | lm-eval-harness via OpenAI-completions backend |
+| IFEval prompt_level_strict | _chat-eval rerun queued_ | lm-eval-harness completions-mode initial pass measured 0.244 — not a fair number (V4-Pro Instruct needs chat template) |
 | MMLU-Pro 5-shot full n=12,032 | _queued_ | lm-eval-harness via OpenAI-completions backend |
 
 Apples-to-apples upstream-checkpoint comparison rows (running the same harness on `deepseek-ai/DeepSeek-V4-Pro` via this same vLLM build) are queued; numbers added as they land.
 
-### Throughput (MTP n=1 + cuda graphs, `max_model_len=65536`)
+### Throughput vs upstream MXFP4 (MTP n=1 + cuda graphs, `max_model_len=65536`)
 
-| Operating point | Aggregate tok/s |
-|---|---|
-| c=1 single-stream | **139.3** |
-| c=16 batched (64 prompts) | **672.6** |
-| c=64 batched (256 prompts) | **1,927.3** |
-| c=128 batched (512 prompts) | **3,004.8** |
+Same vLLM build, same hardware, same bench harness — only the artifact + MoE backend differ. NVFP4 uses `--moe-backend flashinfer_trtllm`; native MXFP4 uses `--moe-backend deep_gemm_mega_moe` (each one on its upstream-recommended kernel).
 
-Throughput scales smoothly through c=128. **Production sweet spot c=32–128** depending on tail-latency tolerance.
+| Operating point | Upstream MXFP4 (`deepseek-ai/DeepSeek-V4-Pro`) | This artifact (NVFP4) | Δ |
+|---|---|---|---|
+| c=1 single-stream | _measuring now_ | **139.3 tok/s** | TBD |
+| c=16 batched (64 prompts) | _measuring now_ | **672.6 tok/s** | TBD |
+| c=64 batched (256 prompts) | _measuring now_ | **1,927.3 tok/s** | TBD |
+| c=128 batched (512 prompts) | _measuring now_ | **3,004.8 tok/s** | TBD |
+
+Throughput scales smoothly through c=128. Production sweet spot c=32–128.
 
 ## Quick start
 
