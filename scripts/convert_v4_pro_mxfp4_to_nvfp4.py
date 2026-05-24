@@ -290,29 +290,15 @@ MTP_FP8_BLOCK_SCALE_RE = re.compile(
 
 
 def classify_tensor(key: str) -> str:
+    # v12 recipe: ZERO mtp transformation. Per NVIDIA/DeepSeek-V3.2-NVFP4
+    # hf_quant_config.json, exclude entire MTP layer from quantization.
+    # Every mtp.* tensor goes straight through byte-for-byte.
+    if key.startswith("mtp."):
+        return "passthrough"
     if EXPERT_WEIGHT_RE.match(key):
         return "expert_weight"
     if EXPERT_SCALE_RE.match(key):
         return "expert_scale"
-    # mtp.0.ffn.experts.*: dequant MXFP4 → BF16 (mirrors V4-Flash recipe which
-    # left the entire MTP block BF16 via calibration `ignore=[r"re:.*mtp\..*"]`
-    # and got 81-88% MTP acceptance. Re-quantizing to NVFP4 here drops
-    # acceptance to 1-3% per the bisection in
-    # docs/findings/mtp_native_vs_ours_2026_05_23.md.)
-    if MTP_EXPERT_WEIGHT_RE.match(key):
-        return "mtp_expert_weight"
-    if MTP_EXPERT_SCALE_RE.match(key):
-        return "mtp_expert_scale"
-    # All non-expert FP8-block-quantized mtp.0 pairs → BF16. Required because
-    # _mtp_block_is_quantized_on_disk in vLLM patch #43319 is binary — it
-    # either applies quant_config wholesale or skips quantization entirely.
-    # Hybrid cases (some mtp.0 modules quantized, some BF16) fail at load
-    # with FP4-packed-shape vs BF16-shape mismatch. Easier to make all of
-    # mtp.0.* BF16 on disk so the detector cleanly returns False.
-    if MTP_FP8_BLOCK_WEIGHT_RE.match(key):
-        return "mtp_fp8_block_weight"
-    if MTP_FP8_BLOCK_SCALE_RE.match(key):
-        return "mtp_fp8_block_scale"
     return "passthrough"
 
 
