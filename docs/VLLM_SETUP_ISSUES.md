@@ -6,7 +6,7 @@ Comprehensive list of every gotcha encountered bringing this artifact up on vLLM
 
 These items are V4-Pro-specific and not in the V4-Flash predecessor's setup-issues doc:
 
-1. **The MTP block must be byte-passthrough from native.** Any transformation of `mtp.0.*` weights (NVFP4 transcode of experts, BF16 dequant of attn / e_proj / h_proj) drops MTP acceptance from ~91% to ~3%. NVIDIA's `nvidia/DeepSeek-V3.2-NVFP4` reference recipe excludes the entire MTP layer (`model.layers.61*` for V4-Pro) from quantization. v12 follows this; v0.2 / v0.3 / v0.4 did not. Full debug chain: [`findings/v12_nvfp4_mtp_working_2026_05_24.md`](findings/v12_nvfp4_mtp_working_2026_05_24.md).
+1. **The MTP block must be byte-passthrough from native.** Any transformation of `mtp.0.*` weights (NVFP4 transcode of experts, BF16 dequant of attn / e_proj / h_proj) breaks MTP draft acceptance. NVIDIA's `nvidia/DeepSeek-V3.2-NVFP4` reference recipe excludes the entire MTP layer (`model.layers.61*` for V4-Pro) from quantization. v12 follows this. Full debug chain: [`findings/v12_nvfp4_mtp_working_2026_05_24.md`](findings/v12_nvfp4_mtp_working_2026_05_24.md).
 
 2. **The load-bearing vLLM bug**: `_mtp_block_is_quantized_on_disk` was missing `".scale"` from its `quant_suffixes` list. DSV4 native checkpoints store FP8 block scales with a raw `.scale` suffix (e.g. `mtp.0.attn.wq_a.scale`), which the runtime renamer converts to `.weight_scale_inv`. But the detector runs BEFORE the rename, scans the raw on-disk keys, sees no matches, returns `False` → MTP block built with `quant_config=None` → `e_proj`/`h_proj` registers `weight` only (no `weight_scale_inv`) → loader raises `KeyError: 'model.layers.61.e_proj.weight_scale_inv'`. **Fix is a single line in `quant_suffixes`**. Patch [#43319](https://github.com/vllm-project/vllm/pull/43319) (this repo's `patches/patch_43319_mtp_quant_detect.diff`).
 
@@ -79,7 +79,7 @@ weight_scale_inv = getattr(self.wo_a, "weight_scale_inv", None) or self.wo_a.wei
 **Files**:
 1. `vllm/models/deepseek_v4/nvidia/mtp.py` (`_mtp_block_is_quantized_on_disk` detector + `.scale` candidate-list resolution in `load_weights`)
 
-**Fix in detector** (the actual root cause of every "3% MTP" measurement):
+**Fix in detector** (the load-bearing fix for native-DSV4 MTP load):
 
 ```python
 quant_suffixes = (
@@ -260,7 +260,7 @@ grep -n '_is_mtp_layer' vllm/models/deepseek_v4/quant_config.py
 # Expect: 3+ matches (the v12b patch)
 ```
 
-If any are missing, MTP load will fail or fall back to ~3% acceptance.
+If any are missing, MTP load will fail or fall back to degraded acceptance.
 
 ## Upstream PR status
 

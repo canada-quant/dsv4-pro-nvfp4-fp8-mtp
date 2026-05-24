@@ -12,10 +12,9 @@ Routed MoE experts converted MXFP4 group=32 → NVFP4 group=16 (E4M3 block scale
 |---|---|
 | **MTP n=1 acceptance, focused probe (20 prompts)** | **91.21%** (3010/3300 drafts) |
 | **Cumulative, MTP probe + AIME thinking=high (full reasoning)** | **92.83%** (37,341/40,225) |
-| Reference: fork docker + native MXFP4 | 91.07% – 91.94% |
-| Earlier conversion attempts (v0.2/v0.3/v0.4) | 2.65% – 3.33% |
+| Reference: native MXFP4 checkpoint on the same vLLM build | 91.07% – 91.94% |
 
-v12 is at parity with the native checkpoint baseline. Earlier attempts perturbed `mtp.0` in some way (NVFP4 experts in v0.2; BF16 dequant in v0.3/v0.4) and tripped a separate `_mtp_block_is_quantized_on_disk` detector bug in vLLM. v12 fixes both.
+At parity with the native checkpoint baseline.
 
 ### Quality (chat greedy temperature 0, this artifact)
 

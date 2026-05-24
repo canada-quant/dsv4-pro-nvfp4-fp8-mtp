@@ -154,6 +154,6 @@ python scripts/bench_v4_pro.py gsm8k \
 | 5 tok/s decode rate | `--enforce-eager` set | drop the flag; cuda graphs required |
 | `ninja` not found on worker | PATH not propagated to subprocess | prepend `/usr/bin:/opt/pytorch/bin` to PATH; install system ninja: `sudo apt install ninja-build` |
 | Build fails on `cuda-toolkit-13-0` missing | source build needs system CUDA | `sudo apt install -y cuda-toolkit-13-0` |
-| ~3% MTP acceptance instead of ~91% | conversion perturbed `mtp.0` (e.g. dequant'd to BF16) | rebuild with the v12 `classify_tensor` that passes `mtp.*` through byte-identical |
+| Low MTP acceptance vs the expected ~91% | conversion perturbed `mtp.0` (e.g. NVFP4 transcode of experts, BF16 dequant of `e_proj`/`h_proj`) | rebuild with the v12 `classify_tensor` that passes `mtp.*` through byte-identical |
 
 More gotchas catalogued in [`VLLM_SETUP_ISSUES.md`](VLLM_SETUP_ISSUES.md).

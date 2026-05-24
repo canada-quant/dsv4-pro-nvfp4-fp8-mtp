@@ -82,10 +82,10 @@ MTP draft acceptance under production config (TP=8 + EP, cuda graphs ON, `flashi
 | Setting | Acceptance | Drafts emitted | Drafts accepted |
 |---|---|---|---|
 | **MTP n=1 focused probe (this artifact, 20 prompts)** | **91.21%** | 3,300 | 3,010 |
-| Native MXFP4 V4-Pro + fork docker (reference) | 91.07% – 91.94% | matching range | matching range |
+| Native MXFP4 V4-Pro on the same vLLM build (reference) | 91.07% – 91.94% | matching range | matching range |
 | **Cumulative — MTP probe + AIME thinking=high full (30 reasoning trajectories)** | **92.83%** | 40,225 | 37,341 |
 
-The earlier v0.2 / v0.3 / v0.4 candidate artifacts measured 2.65% – 3.33% — they all perturbed the MTP block in some way (NVFP4 experts in v0.2; BF16 dequant in v0.3/v0.4). v12 leaves `mtp.0.*` byte-identical to native and achieves parity with the native baseline.
+At parity with the native checkpoint baseline. The MTP block is byte-identical to native, following NVIDIA's `nvidia/DeepSeek-V3.2-NVFP4` reference recipe of excluding the entire MTP layer from quantization.
 
 ---
 
@@ -189,14 +189,14 @@ When upstream merges, the local patch set shrinks.
 
 ---
 
-## The fix stack — how we got from 3% to 91%
+## The 5-part recipe (what makes MTP work on mainline vLLM)
 
-v0.2/v0.3/v0.4 all measured ~3% MTP acceptance. v12 hits 91.21% focused / 92.83% cumulative on full reasoning workloads. Five changes were needed together:
+Five changes are needed together to serve NVFP4 V4-Pro with MTP at native parity on mainline vLLM with cuda graphs ON:
 
 1. **Conversion**: pass `mtp.*` tensors through byte-identical to native (no transcoding, no dequant) — matches NVIDIA's V3.2-NVFP4 recipe.
-2. **vLLM `_mtp_block_is_quantized_on_disk` fix**: detector was missing `.scale` (DSV4 native FP8 block scale suffix) from its `quant_suffixes` list. False-negative → MTP block built unquantized → `e_proj.weight_scale_inv` never registered → `KeyError` at load → all earlier attempts worked around by **dequantizing mtp.0 to BF16**, which broke MTP. One-line fix is THE load-bearing patch.
+2. **vLLM `_mtp_block_is_quantized_on_disk` fix (the load-bearing one)**: include `.scale` in `quant_suffixes`. DSV4's native FP8 block-quant convention uses a bare `.scale` suffix, which the pre-fix detector didn't recognize.
 3. **vLLM `DSV4FP8Config` per-layer MoE routing**: trunk MoE is NVFP4, MTP MoE is MXFP4 (native). The single global `moe_quant_algo` field doesn't support hybrid; we patch `get_quant_method` to force `Mxfp4MoEMethod` when prefix matches an MTP layer.
-4. **flashinfer pin to 0.6.8.post1**: 0.6.11.post2 had an ABI regression that silently crashes workers.
+4. **flashinfer pin to 0.6.8.post1**: 0.6.11.post2 has an ABI regression that silently crashes workers.
 5. **Config**: `quant_method=fp8`, `moe_quant_algo=NVFP4`, no `ignored_layers`. The runtime patches handle per-layer divergence.
 
 Full debug chain in [`docs/findings/v12_nvfp4_mtp_working_2026_05_24.md`](https://github.com/canada-quant/dsv4-pro-nvfp4-fp8-mtp/blob/main/docs/findings/v12_nvfp4_mtp_working_2026_05_24.md).

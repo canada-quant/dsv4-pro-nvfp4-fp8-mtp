@@ -5,7 +5,6 @@
 Document conventions:
 - "Source artifact" = `deepseek-ai/DeepSeek-V4-Pro` on HF (864 GB on disk, native FP4+FP8+BF16).
 - "This artifact" = `canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP` v12 (913 GiB on disk; NVFP4 trunk routed experts + native FP8 attention + native MXFP4-FP8-BF16 MTP block, full passthrough).
-- "Predecessor" = `canada-quant/DeepSeek-V4-Flash-NVFP4-FP8-MTP` (V4-Flash version of the same pattern).
 
 ---
 
@@ -226,23 +225,7 @@ hf upload canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP \
 
 ---
 
-## 10. What's different from the V4-Flash predecessor recipe
-
-| Step | V4-Flash recipe | V4-Pro v12 recipe |
-|---|---|---|
-| Quantization method | Calibration: BF16 source → llm-compressor `QuantizationModifier` with 64 ultrachat_200k samples | **Conversion**: load native MXFP4, transcode to NVFP4 — no calibration |
-| Source format on HF | BF16 ~600 GB | Native FP4+FP8+BF16 ~864 GB (no public BF16) |
-| Output trunk routed experts | NVFP4 group=16 + E4M3 block scales | Same |
-| Output attention | FP8 block 128×128 | Same |
-| **MTP block** | BF16 (`ignore=[r"re:.*mtp\..*"]` in calibration recipe) | **Native passthrough** (MXFP4 + FP8 + BF16 mixed, NVIDIA-recipe aligned) |
-| vLLM patches | 5 (4 vllm + 1 transformers) | 5 + 1 local (all vllm; transformers patch obsolete) |
-| Hardware for conversion | 4× B300 (calibration forward) | 1× B300 (per-shard transcoding) |
-| Time to artifact | ~6-8 hours | ~25 min |
-| MTP draft acceptance | 81.60% (AIME) / 87.92% (chat) | **91.21%** focused / **92.83%** cumulative |
-
----
-
-## 11. The five vLLM patches + one local diff (v12)
+## 10. The five vLLM patches + one local diff (v12)
 
 | Patch file | Upstream PR | Where it fixes things |
 |---|---|---|

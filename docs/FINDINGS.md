@@ -2,7 +2,7 @@
 
 ## Start here
 
-- [`v12_nvfp4_mtp_working_2026_05_24.md`](findings/v12_nvfp4_mtp_working_2026_05_24.md) — **The full 5-step fix stack** that got NVFP4 V4-Pro from 3% to 91% MTP on mainline vLLM with cuda graphs ON. Conversion (NVIDIA-recipe `mtp.*` byte-passthrough) + four vLLM PR patches (#43248, #43288, #43290, #43319 with the `.scale` detector fix, #43467) + one local DSV4FP8Config per-layer MoE routing patch + flashinfer 0.6.8 pin.
+- [`v12_nvfp4_mtp_working_2026_05_24.md`](findings/v12_nvfp4_mtp_working_2026_05_24.md) — **The full 5-step recipe** for native-parity MTP on mainline vLLM with cuda graphs ON. Conversion (NVIDIA-recipe `mtp.*` byte-passthrough) + four vLLM PR patches (#43248, #43288, #43290, #43319 with the `.scale` detector fix, #43467) + one local DSV4FP8Config per-layer MoE routing patch + flashinfer 0.6.8 pin.
 - [`v12_nvidia_recipe_2026_05_24.md`](findings/v12_nvidia_recipe_2026_05_24.md) — Conversion-side alignment with NVIDIA's `nvidia/DeepSeek-V3.2-NVFP4` reference recipe.
 - [../MODEL_CARD.md](../MODEL_CARD.md) — HF-friendly summary with headline numbers.
 - [../docs/QUICKSTART.md](QUICKSTART.md) — end-to-end serve recipe.
