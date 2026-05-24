@@ -31,7 +31,7 @@ NVFP4 wins at every concurrency, peaking +37% at bs=16. The gain narrows past bs
 | Metric | Value |
 |---|---|
 | MTP n=1 acceptance, focused probe (20 prompts) | **91.21%** (3010/3300 drafts) |
-| Cumulative, MTP probe + AIME thinking=high (full reasoning) | **92.83%** (37,341/40,225) |
+| Cumulative, MTP probe + AIME Non-Think greedy (full reasoning) | **92.83%** (37,341/40,225) |
 | Reference: native MXFP4 (`deepseek-ai/DeepSeek-V4-Pro`), same vLLM build, same 20-prompt probe | **90.92%** (2905/3195 drafts) |
 
 At parity with the upstream checkpoint baseline.
@@ -42,7 +42,7 @@ At parity with the upstream checkpoint baseline.
 |---|---|---|
 | GSM8K full n=1319 | **0.9659** (CI [0.9547, 0.9744]) | chat greedy, max_tokens=2048, 0 truncations |
 | GSM8K matched n=300 vs upstream MXFP4 | **0.9867** (296/300) vs upstream 0.9900 (297/300) | 1 strict-loss problem, Wilson CIs overlap |
-| AIME 2024 thinking=high (n=30) | **21/30 = 70.00%** | max_tokens=60000, 0 truncations |
+| AIME 2024 Non-Think greedy (n=30) | **21/30 = 70.00%** | max_tokens=60000, 0 truncations |
 | HumanEval pass@1 | **0.951** | EvalPlus greedy |
 | HumanEval+ pass@1 | **0.902** | EvalPlus greedy |
 | MBPP pass@1 | **0.929** | EvalPlus greedy |
@@ -120,7 +120,7 @@ docs/
     v12_nvfp4_mtp_working_2026_05_24.md   — how we got to ~91% MTP
     backend_format_matrix.md          — NVFP4×MXFP4 × flashinfer×deep_gemm matrix
     throughput_scaling.md             — bs=1 → bs=128 batched concurrency sweep
-    aime30_full_2026_05_22.md         — AIME-30 thinking=high
+    aime30_full_2026_05_22.md         — AIME-30 Non-Think greedy
     mmlu_pro_2026_05_22.md            — MMLU-Pro 5-shot full 12k
     humaneval_2026_05_22.md           — HumanEval / HumanEval+ via EvalPlus
     ifeval_2026_05_22.md              — IFEval zero-shot

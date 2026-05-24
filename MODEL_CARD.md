@@ -41,10 +41,10 @@ NVFP4 wins at every concurrency, peaking at **+37% at c=16**. The gain narrows a
 | | |
 |---|---|
 | **Speedup vs upstream MXFP4** | **+25.7% c=1 / +36.9% c=16 / +13.4% c=64 / +7.1% c=128** (same build, same MTP n=1 + cuda graphs config) |
-| **MTP draft acceptance** | **91.21%** focused (vs upstream **90.92%** on same probe) / **92.83%** cumulative across MTP + AIME thinking=high |
+| **MTP draft acceptance** | **91.21%** focused (vs upstream **90.92%** on same probe) / **92.83%** cumulative across MTP + AIME Non-Think greedy |
 | **Peak throughput** | **3,005 tok/s** aggregate at c=128; **1,927 tok/s** at c=64 |
 | **Single-stream with MTP** | **139 tok/s** at c=1 (MTP n=1 + cuda graphs) |
-| **AIME 2024 thinking=high** | **21/30 = 70.00%** raw (full 30 problems, max_tokens=60000, **zero truncations**) |
+| **AIME 2024 (Non-Think greedy)** | **21/30 = 70.00%** raw (full 30 problems, max_tokens=60000, **zero truncations**) |
 | **GSM8K** | **1274/1319 = 96.59%** (full n=1319, 0 truncations) |
 | **HumanEval / HumanEval+** | **0.951 / 0.902** pass@1 (EvalPlus, greedy) |
 | **MBPP / MBPP+** | **0.929 / 0.778** pass@1 (EvalPlus, greedy) |
@@ -81,7 +81,7 @@ These numbers are measured by **us**, on **our** vLLM build, on **our** 8× B300
 | MTP draft acceptance (n=1, 20-prompt probe, same vLLM build) | **90.92%** | **91.21%** | within noise |
 | GSM8K matched n=300 (chat greedy, max_tokens=2048) | 0.9900 (297/300) | **0.9867** (296/300) | -1 problem (Wilson CIs overlap) |
 | GSM8K full n=1319 | _measurement in progress_ | **0.9659** (CI [0.9547, 0.9744]) | TBD |
-| AIME 2024 thinking=high (n=30, max_tokens=60000) | _measurement in progress_ | **21/30 = 70.00%** (0 truncations) | TBD |
+| AIME 2024 (Non-Think greedy) (n=30, max_tokens=60000) | _measurement in progress_ | **21/30 = 70.00%** (0 truncations) | TBD |
 | HumanEval pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.951** | TBD |
 | HumanEval+ pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.902** | TBD |
 | MBPP pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.929** | TBD |
@@ -101,7 +101,9 @@ MTP draft acceptance under production config (TP=8 + EP, cuda graphs ON, `flashi
 |---|---|---|---|
 | **MTP n=1 focused probe (this artifact, 20 prompts)** | **91.21%** | 3,300 | 3,010 |
 | **MTP n=1 focused probe (upstream MXFP4, same vLLM build, same 20 prompts)** | **90.92%** | 3,195 | 2,905 |
-| **Cumulative — MTP probe + AIME thinking=high full (30 reasoning trajectories)** | **92.83%** | 40,225 | 37,341 |
+| **Cumulative — MTP probe + AIME-30 full Non-Think greedy** | **92.83%** | 40,225 | 37,341 |
+
+> **Note on AIME methodology**: the 21/30 result is measured at `temperature=0` (greedy), generic system prompt, vLLM default chat template — i.e. **Non-Think mode**. DeepSeek's published Think-High mode (HMMT 2026 Feb 94.0%) requires `temperature=1.0, top_p=1.0` plus the encoder-side `thinking_mode="thinking"` flag from the upstream `encoding/` folder; that proper Think-High AIME run is queued.
 
 At parity with the upstream checkpoint baseline. The MTP block is byte-identical to native, following NVIDIA's `nvidia/DeepSeek-V3.2-NVFP4` reference recipe of excluding the entire MTP layer from quantization.
 
