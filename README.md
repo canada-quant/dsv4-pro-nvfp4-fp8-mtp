@@ -12,9 +12,9 @@ Routed MoE experts converted MXFP4 group=32 → NVFP4 group=16 (E4M3 block scale
 |---|---|
 | **MTP n=1 acceptance, focused probe (20 prompts)** | **91.21%** (3010/3300 drafts) |
 | **Cumulative, MTP probe + AIME thinking=high (full reasoning)** | **92.83%** (37,341/40,225) |
-| Reference: native MXFP4 checkpoint on the same vLLM build | 91.07% – 91.94% |
+| Reference: native MXFP4 (`deepseek-ai/DeepSeek-V4-Pro`), same vLLM build, same 20-prompt probe | **90.92%** (2905/3195 drafts) |
 
-At parity with the native checkpoint baseline.
+At parity with the upstream checkpoint baseline.
 
 ### Quality (chat greedy temperature 0, this artifact)
 
@@ -36,14 +36,14 @@ Apples-to-apples upstream-checkpoint comparison rows (running the same harness o
 
 Same vLLM build, same hardware, same bench harness — only the artifact + MoE backend differ. NVFP4 uses `--moe-backend flashinfer_trtllm`; native MXFP4 uses `--moe-backend deep_gemm_mega_moe` (each one on its upstream-recommended kernel).
 
-| Operating point | Upstream MXFP4 (`deepseek-ai/DeepSeek-V4-Pro`) | This artifact (NVFP4) | Δ |
+| Operating point | Upstream MXFP4 + deep_gemm + MTP | This artifact (NVFP4) + flashinfer + MTP | Δ |
 |---|---|---|---|
-| c=1 single-stream | _measuring now_ | **139.3 tok/s** | TBD |
-| c=16 batched (64 prompts) | _measuring now_ | **672.6 tok/s** | TBD |
-| c=64 batched (256 prompts) | _measuring now_ | **1,927.3 tok/s** | TBD |
-| c=128 batched (512 prompts) | _measuring now_ | **3,004.8 tok/s** | TBD |
+| c=1 single-stream | 110.8 tok/s | **139.3 tok/s** | **+25.7%** |
+| c=16 batched (64 prompts) | 491.4 tok/s | **672.6 tok/s** | **+36.9%** |
+| c=64 batched (256 prompts) | 1,699.2 tok/s | **1,927.3 tok/s** | **+13.4%** |
+| c=128 batched (512 prompts) | 2,806.7 tok/s | **3,004.8 tok/s** | **+7.1%** |
 
-Throughput scales smoothly through c=128. Production sweet spot c=32–128.
+NVFP4 wins at every concurrency, peaking at +37% aggregate at c=16. Production sweet spot c=16–64.
 
 ## Quick start
 

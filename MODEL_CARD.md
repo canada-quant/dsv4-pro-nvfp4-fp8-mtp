@@ -48,7 +48,7 @@ NVFP4 conversion is a **lossless format change** on the trunk routed experts: MX
 | Benchmark | Native source `deepseek-ai/DeepSeek-V4-Pro` (MXFP4) | This artifact (NVFP4) | Δ |
 |---|---|---|---|
 | GSM8K matched n=300 | 0.9900 (297/300) | **0.9867** (296/300) | -1 problem (within Wilson CI) |
-| MTP draft acceptance (n=1, 20-prompt probe) | 91.07% – 91.94% | **91.21%** | within noise |
+| MTP draft acceptance (n=1, 20-prompt probe, same vLLM build) | **90.92%** | **91.21%** | within noise |
 
 The matched-300 NVFP4-vs-source check flips exactly 1 of 300 problems. Wilson CIs overlap fully. The MTP draft head is at parity with the native checkpoint.
 
@@ -60,7 +60,7 @@ These numbers are measured by **us**, on **our** vLLM build, on **our** 8× B300
 
 | Benchmark | Upstream MXFP4 (`deepseek-ai/DeepSeek-V4-Pro`) | This artifact (NVFP4) | Δ |
 |---|---|---|---|
-| MTP draft acceptance (n=1, 20-prompt probe) | 91.07% – 91.94% | **91.21%** | within noise |
+| MTP draft acceptance (n=1, 20-prompt probe, same vLLM build) | **90.92%** | **91.21%** | within noise |
 | GSM8K matched n=300 (chat greedy, max_tokens=2048) | 0.9900 (297/300) | **0.9867** (296/300) | -1 problem (Wilson CIs overlap) |
 | GSM8K full n=1319 | _measurement in progress_ | **0.9659** (CI [0.9547, 0.9744]) | TBD |
 | AIME 2024 thinking=high (n=30, max_tokens=60000) | _measurement in progress_ | **21/30 = 70.00%** (0 truncations) | TBD |
@@ -82,28 +82,28 @@ MTP draft acceptance under production config (TP=8 + EP, cuda graphs ON, `flashi
 | Setting | Acceptance | Drafts emitted | Drafts accepted |
 |---|---|---|---|
 | **MTP n=1 focused probe (this artifact, 20 prompts)** | **91.21%** | 3,300 | 3,010 |
-| Native MXFP4 V4-Pro on the same vLLM build (reference) | 91.07% – 91.94% | matching range | matching range |
+| **MTP n=1 focused probe (upstream MXFP4, same vLLM build, same 20 prompts)** | **90.92%** | 3,195 | 2,905 |
 | **Cumulative — MTP probe + AIME thinking=high full (30 reasoning trajectories)** | **92.83%** | 40,225 | 37,341 |
 
-At parity with the native checkpoint baseline. The MTP block is byte-identical to native, following NVIDIA's `nvidia/DeepSeek-V3.2-NVFP4` reference recipe of excluding the entire MTP layer from quantization.
+At parity with the upstream checkpoint baseline. The MTP block is byte-identical to native, following NVIDIA's `nvidia/DeepSeek-V3.2-NVFP4` reference recipe of excluding the entire MTP layer from quantization.
 
 ---
 
 ## Throughput vs the upstream MXFP4 checkpoint
 
-Single-node 8× B300 SXM6 AC, same vLLM build (mainline `30f52a895` + 5 PR patches + 1 local), same bench harness, MTP n=1 + cuda graphs ON, `--max-model-len 65536`, `max_tokens=128` per prompt. Only the artifact + `--moe-backend` differ:
+Single-node 8× B300 SXM6 AC, **same vLLM build** (mainline `30f52a895` + 5 PR patches + 1 local), **same bench harness**, **MTP n=1 + cuda graphs ON**, `--max-model-len 65536`, `max_tokens=128` per prompt. Only the artifact + `--moe-backend` differ:
 
 - **This artifact**: `--moe-backend flashinfer_trtllm` (required for NVFP4)
 - **Upstream MXFP4** (`deepseek-ai/DeepSeek-V4-Pro`): `--moe-backend deep_gemm_mega_moe` (the upstream-recommended kernel for native MXFP4)
 
-| Operating point | Upstream MXFP4 (`deepseek-ai/DeepSeek-V4-Pro`) | This artifact (NVFP4) | Δ |
+| Operating point | Upstream MXFP4 + deep_gemm + MTP | This artifact (NVFP4) + flashinfer + MTP | Δ |
 |---|---|---|---|
-| **c=1 single-stream** | _measurement in progress_ | **139.3 tok/s** | TBD |
-| **c=16 batched aggregate** (64 prompts) | _measurement in progress_ | **672.6 tok/s** | TBD |
-| **c=64 batched aggregate** (256 prompts) | _measurement in progress_ | **1,927.3 tok/s** | TBD |
-| **c=128 batched aggregate** (512 prompts) | _measurement in progress_ | **3,004.8 tok/s** | TBD |
+| **c=1 single-stream** | 110.8 tok/s | **139.3 tok/s** | **+25.7%** |
+| **c=16 batched aggregate** (64 prompts) | 491.4 tok/s | **672.6 tok/s** | **+36.9%** |
+| **c=64 batched aggregate** (256 prompts) | 1,699.2 tok/s | **1,927.3 tok/s** | **+13.4%** |
+| **c=128 batched aggregate** (512 prompts) | 2,806.7 tok/s | **3,004.8 tok/s** | **+7.1%** |
 
-Both configs use MTP n=1 + cuda graphs ON. Native MXFP4 baseline numbers are the active measurement currently running. Earlier scouting runs (pre-v12, different config) showed +41% NVFP4 advantage at c=16 batched and +81% advantage at c=1 single-stream — the proper same-vLLM apples-to-apples table will land here when the native serve completes.
+NVFP4 wins at every concurrency, peaking at **+37% aggregate at c=16**. The advantage narrows at c=64/128 as both formats saturate the GPUs. **Production sweet spot c=16–64** depending on tail-latency tolerance.
 
 **Production sweet spot: c=32–128** depending on workload tail-latency tolerance.
 
