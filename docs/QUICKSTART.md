@@ -1,6 +1,6 @@
 # Quick start — serve `canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP` with MTP
 
-End-to-end recipe to get the artifact serving with **91.45% MTP draft acceptance** + **cuda graphs ON** on a Blackwell-class node.
+End-to-end recipe to get the artifact serving with **~91% focused / ~93% cumulative MTP draft acceptance** + **cuda graphs ON** on a Blackwell-class node.
 
 ## Hardware
 

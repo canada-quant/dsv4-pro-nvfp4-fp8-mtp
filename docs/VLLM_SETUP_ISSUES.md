@@ -1,6 +1,6 @@
 # vLLM setup issues + the 5 patches needed to serve this artifact
 
-Comprehensive list of every gotcha encountered bringing this artifact up on vLLM mainline with **MTP at 91.45%**, plus the exact diff for each local patch (with corresponding upstream PR) and the calibration/environment quirks that don't require a patch.
+Comprehensive list of every gotcha encountered bringing this artifact up on vLLM mainline at **~91% focused / ~93% cumulative MTP draft acceptance**, plus the exact diff for each local patch (with corresponding upstream PR) and the environment quirks that don't require a patch.
 
 ## V4-Pro-specific findings
 

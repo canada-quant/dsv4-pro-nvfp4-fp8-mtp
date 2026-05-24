@@ -105,7 +105,7 @@ docs/
   FINDINGS.md                         — index of findings docs
   benchmarks/                         — per-benchmark JSON outputs
   findings/                           — methodology + diagnostic notes
-    v12_nvfp4_mtp_working_2026_05_24.md   — how we got to 91.45% MTP
+    v12_nvfp4_mtp_working_2026_05_24.md   — how we got to ~91% MTP
     backend_format_matrix.md          — NVFP4×MXFP4 × flashinfer×deep_gemm matrix
     throughput_scaling.md             — c=1 → c=128 batched concurrency sweep
     aime30_full_2026_05_22.md         — AIME-30 thinking=high
