@@ -81,7 +81,7 @@ These numbers are measured by **us**, on **our** vLLM build, on **our** 8× B300
 | MTP draft acceptance (n=1, 20-prompt probe, same vLLM build) | **90.92%** | **91.21%** | within noise |
 | GSM8K matched n=300 (chat greedy, max_tokens=2048) | 0.9900 (297/300) | **0.9867** (296/300) | -1 problem (Wilson CIs overlap) |
 | GSM8K full n=1319 | **0.9682** (CI [0.9572, 0.9764]) | **0.9659** (CI [0.9547, 0.9744]) | -3 problems (within CI overlap) |
-| AIME 2024 (Non-Think greedy) (n=30, max_tokens=60000) | _measurement in progress_ | **21/30 = 70.00%** (0 truncations) | TBD |
+| AIME 2024 (Non-Think greedy) (n=30, max_tokens=60000) | **18/30 = 60.00%** (0 truncations) | **21/30 = 70.00%** (0 truncations) | +3 problems (NVFP4 higher; greedy sampling variance at temp=0) |
 | HumanEval pass@1 (EvalPlus greedy) | **0.963** | **0.951** | -0.012 (within noise) |
 | HumanEval+ pass@1 (EvalPlus greedy) | **0.915** | **0.902** | -0.013 (within noise) |
 | MBPP pass@1 (EvalPlus greedy) | **0.921** | **0.929** | +0.008 (NVFP4 slightly higher — within noise) |
@@ -89,7 +89,9 @@ These numbers are measured by **us**, on **our** vLLM build, on **our** 8× B300
 | IFEval prompt_level_strict | _chat-eval rerun queued_ | _chat-eval rerun queued_ | TBD (initial completions-mode pass measured 0.244 on both; not a fair number — V4-Pro Instruct requires chat-template) |
 | MMLU-Pro 5-shot full n=12,032 | _measurement queued_ | _queued_ | TBD |
 
-The matched-300 GSM8K + MTP probe are the only direct apples-to-apples we have completed so far. The remaining rows are queued — we serve the upstream `deepseek-ai/DeepSeek-V4-Pro` artifact on this same vLLM build with `--moe-backend deep_gemm_mega_moe --speculative-config '{"method":"mtp","num_speculative_tokens":1}'` and re-run the same probes. Numbers added when complete.
+All seven completed rows are within typical quantization noise (CIs overlap, deltas < ±0.013 on EvalPlus benchmarks, ±3 problems on AIME). On most rows the NVFP4 artifact is within ±1% of the native; on MBPP base and AIME it scores slightly higher (greedy sampling variance at temp=0 across the format change).
+
+IFEval and MMLU-Pro 5-shot are queued. IFEval needs to be re-run with chat-template (the initial completions-mode pass measured 0.244 on both artifacts, not a fair number for an instruct model).
 
 ---
 
