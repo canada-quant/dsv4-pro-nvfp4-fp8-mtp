@@ -84,8 +84,8 @@ These numbers are measured by **us**, on **our** vLLM build, on **our** 8× B300
 | AIME 2024 (Non-Think greedy) (n=30, max_tokens=60000) | _measurement in progress_ | **21/30 = 70.00%** (0 truncations) | TBD |
 | HumanEval pass@1 (EvalPlus greedy) | **0.963** | **0.951** | -0.012 (within noise) |
 | HumanEval+ pass@1 (EvalPlus greedy) | **0.915** | **0.902** | -0.013 (within noise) |
-| MBPP pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.929** | TBD |
-| MBPP+ pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.778** | TBD |
+| MBPP pass@1 (EvalPlus greedy) | **0.921** | **0.929** | +0.008 (NVFP4 slightly higher — within noise) |
+| MBPP+ pass@1 (EvalPlus greedy) | **0.783** | **0.778** | -0.005 (within noise) |
 | IFEval prompt_level_strict | _chat-eval rerun queued_ | _chat-eval rerun queued_ | TBD (initial completions-mode pass measured 0.244 on both; not a fair number — V4-Pro Instruct requires chat-template) |
 | MMLU-Pro 5-shot full n=12,032 | _measurement queued_ | _queued_ | TBD |
 
