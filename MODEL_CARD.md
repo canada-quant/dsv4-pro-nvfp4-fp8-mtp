@@ -38,7 +38,7 @@ NVFP4 wins at every concurrency, peaking at **+37% at c=16**. The gain narrows a
 
 ## TL;DR
 
-| | |
+| Metric | Value |
 |---|---|
 | **Speedup vs upstream MXFP4** | **+25.7% c=1 / +36.9% c=16 / +13.4% c=64 / +7.1% c=128** (same build, same MTP n=1 + cuda graphs config) |
 | **MTP draft acceptance** | **91.21%** focused (vs upstream **90.92%** on same probe) / **92.83%** cumulative across MTP + AIME Non-Think greedy |
