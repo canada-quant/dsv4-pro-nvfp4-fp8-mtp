@@ -82,8 +82,8 @@ These numbers are measured by **us**, on **our** vLLM build, on **our** 8× B300
 | GSM8K matched n=300 (chat greedy, max_tokens=2048) | 0.9900 (297/300) | **0.9867** (296/300) | -1 problem (Wilson CIs overlap) |
 | GSM8K full n=1319 | **0.9682** (CI [0.9572, 0.9764]) | **0.9659** (CI [0.9547, 0.9744]) | -3 problems (within CI overlap) |
 | AIME 2024 (Non-Think greedy) (n=30, max_tokens=60000) | _measurement in progress_ | **21/30 = 70.00%** (0 truncations) | TBD |
-| HumanEval pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.951** | TBD |
-| HumanEval+ pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.902** | TBD |
+| HumanEval pass@1 (EvalPlus greedy) | **0.963** | **0.951** | -0.012 (within noise) |
+| HumanEval+ pass@1 (EvalPlus greedy) | **0.915** | **0.902** | -0.013 (within noise) |
 | MBPP pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.929** | TBD |
 | MBPP+ pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.778** | TBD |
 | IFEval prompt_level_strict | _chat-eval rerun queued_ | _chat-eval rerun queued_ | TBD (initial completions-mode pass measured 0.244 on both; not a fair number — V4-Pro Instruct requires chat-template) |
