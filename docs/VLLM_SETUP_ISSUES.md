@@ -1,22 +1,26 @@
-# vLLM setup issues + the 4 patches needed to serve this artifact
+# vLLM setup issues + the 5 patches needed to serve this artifact
 
-Comprehensive list of every gotcha encountered bringing this artifact up on vLLM mainline, plus the exact diff for each local patch (with corresponding upstream PR).
+Comprehensive list of every gotcha encountered bringing this artifact up on vLLM mainline with **MTP at 91.45%**, plus the exact diff for each local patch (with corresponding upstream PR) and the calibration/environment quirks that don't require a patch.
 
-## V4-Pro-specific findings (new since V4-Flash predecessor)
+## V4-Pro-specific findings
 
 These items are V4-Pro-specific and not in the V4-Flash predecessor's setup-issues doc:
 
-1. **`deep_gemm_mega_moe` does not dispatch NVFP4 in current mainline**. Loading our NVFP4 artifact with `--moe-backend deep_gemm_mega_moe` raises `KeyError: 'layers.0.ffn.experts.w13_input_scale'`. The mega-kernel path expects fused-name MoE parameters (one tensor for all experts), but NVFP4 ModelOpt layout uses per-expert names. Use `--moe-backend flashinfer_trtllm` for NVFP4 artifacts. Full repro and discussion in [`findings/backend_format_matrix.md`](findings/backend_format_matrix.md). vLLM issue to be filed.
+1. **The MTP block must be byte-passthrough from native.** Any transformation of `mtp.0.*` weights (NVFP4 transcode of experts, BF16 dequant of attn / e_proj / h_proj) drops MTP acceptance from ~91% to ~3%. NVIDIA's `nvidia/DeepSeek-V3.2-NVFP4` reference recipe excludes the entire MTP layer (`model.layers.61*` for V4-Pro) from quantization. v12 follows this; v0.2 / v0.3 / v0.4 did not. Full debug chain: [`findings/v12_nvfp4_mtp_working_2026_05_24.md`](findings/v12_nvfp4_mtp_working_2026_05_24.md).
 
-2. **`mtp.0.{e_proj, h_proj}` stored as BF16 in this artifact** (not native FP8). `ReplicatedLinear + Fp8Config` in vLLM mainline does not register `weight_scale_inv` for these two modules in a way the MTP loader can resolve — loading the native FP8 versions produces `KeyError: 'model.layers.61.e_proj.weight_scale_inv'`. We sidestep at conversion time by dequantizing to BF16. Full rationale in [`findings/mtp_eproj_hproj_workaround.md`](findings/mtp_eproj_hproj_workaround.md). Patch #43319 below is our partial fix in the loader; the proper root-cause fix is in core `ReplicatedLinear` and remains to be filed.
+2. **The load-bearing vLLM bug**: `_mtp_block_is_quantized_on_disk` was missing `".scale"` from its `quant_suffixes` list. DSV4 native checkpoints store FP8 block scales with a raw `.scale` suffix (e.g. `mtp.0.attn.wq_a.scale`), which the runtime renamer converts to `.weight_scale_inv`. But the detector runs BEFORE the rename, scans the raw on-disk keys, sees no matches, returns `False` → MTP block built with `quant_config=None` → `e_proj`/`h_proj` registers `weight` only (no `weight_scale_inv`) → loader raises `KeyError: 'model.layers.61.e_proj.weight_scale_inv'`. **Fix is a single line in `quant_suffixes`**. Patch [#43319](https://github.com/vllm-project/vllm/pull/43319) (this repo's `patches/patch_43319_mtp_quant_detect.diff`).
 
-3. **MTP acceptance is structurally low on V4-Pro**. We measure 1.82% per-token (accept length 1.036) at MTP n=2. Consistent with LMSYS day-zero accept length ~1.19 on the partner-blessed deployment and with vLLM upstream classifying V4-Pro MTP as `opt_in_features`, not default. Documented in [`findings/upstream_mtp_classification.md`](findings/upstream_mtp_classification.md). Not a CQL/conversion issue.
+3. **Per-layer MoE quant dispatch for hybrid NVFP4-trunk + MXFP4-MTP**. v12 has NVFP4 trunk experts but MXFP4 MTP experts. `DSV4FP8Config.get_quant_method` has a single global `moe_quant_algo` branch — when it's `"NVFP4"`, all MoE layers go through `ModelOptNvFp4FusedMoE` including MTP. The MTP MoE then tries to load NVFP4-packed params, finds the on-disk MXFP4 layout instead, crashes. Patch: detect MTP layer by prefix and force `Mxfp4MoEMethod` regardless of global `moe_quant_algo`. Local patch `patches/patch_v12b_per_layer_moe_routing.diff`; upstream PR pending.
 
-4. **`--moe-backend flashinfer_trtllm` is the only path for NVFP4 today**. We measured native MXFP4 throughput on both `deep_gemm_mega_moe` (the upstream-recipe default) and `flashinfer_trtllm` — `deep_gemm` is ~4% faster on native MXFP4. So the comparison NVFP4+flashinfer vs MXFP4+deep_gemm is each format on its preferred backend, the honest like-for-like.
+4. **flashinfer 0.6.11.post2 silent worker crash**. `pip install -e .` of vLLM mainline pulls in `flashinfer-cubin==0.6.11.post2` which silently crashes workers during model construction (no stack trace, just `RuntimeError: cancelled` and `WorkerProc initialization failed due to an exception in a background process`). Pin to 0.6.8.post1: `pip install --no-deps 'flashinfer-cubin==0.6.8.post1' 'flashinfer-python==0.6.8.post1'`. Likely ABI regression between 0.6.8 and 0.6.11.
 
-## The 4 local patches
+5. **`deep_gemm_mega_moe` does not dispatch NVFP4 in current mainline**. Loading our NVFP4 artifact with `--moe-backend deep_gemm_mega_moe` raises `KeyError: 'layers.0.ffn.experts.w13_input_scale'`. The mega-kernel path expects fused-name MoE parameters (one tensor for all experts); NVFP4 ModelOpt layout uses per-expert names. Use `--moe-backend flashinfer_trtllm` for NVFP4. Filed as [vLLM #43454](https://github.com/vllm-project/vllm/issues/43454) + fix PR [#43467](https://github.com/vllm-project/vllm/pull/43467).
 
-Until upstream merges, you'll need these applied to your local vLLM checkout. All 4 are filed as PRs against `vllm-project/vllm`. PR #42209 (NVFP4 MoE support for DSV4 by sychen52) merged 2026-05-22 and is now in mainline — it's a dependency for serving our artifact at all, but no longer requires a cherry-pick.
+6. **`--moe-backend flashinfer_trtllm` is the only path for NVFP4 today**. On native MXFP4, `deep_gemm_mega_moe` is ~4% faster than `flashinfer_trtllm`. The honest NVFP4-vs-MXFP4 throughput comparison is each format on its preferred backend.
+
+## The 5 local patches
+
+Until upstream merges, you'll need these applied to your vLLM checkout. All are filed as PRs against `vllm-project/vllm`. PR #42209 (NVFP4 MoE support for DSV4) merged 2026-05-22 and is now in mainline — no cherry-pick needed.
 
 ### Patch 1 — `bool()` wrap on `is_static_input_scheme` ([PR #43248](https://github.com/vllm-project/vllm/pull/43248))
 
@@ -27,14 +31,13 @@ Until upstream merges, you'll need these applied to your local vLLM checkout. Al
 ```python
 # Before
 is_static_input_scheme = input_quant and not input_quant.dynamic
-
 # After
 is_static_input_scheme = bool(input_quant and not input_quant.dynamic)
 ```
 
-**Why**: `input_quant and not input_quant.dynamic` evaluates to `input_quant` (a `QuantizationArgs` object) when truthy, not `True`. Downstream code uses it as a boolean in `if`-tests, but when stored/serialized it's the object reference. The `bool()` wrap is defensive and idempotent.
+**Why**: `input_quant and not input_quant.dynamic` evaluates to `input_quant` (a `QuantizationArgs` object) when truthy, not `True`. Downstream code expects `bool`. `bool()` wrap is defensive and idempotent.
 
-**Symptom without patch**: `TypeError: object is not subscriptable` at unrelated downstream sites that try to index into what they expected to be a `bool`.
+**Symptom without patch**: `TypeError: object is not subscriptable` at unrelated downstream sites.
 
 ### Patch 2 — `.get("scale_fmt", "ue8m0")` ([PR #43288](https://github.com/vllm-project/vllm/pull/43288))
 
@@ -47,33 +50,13 @@ self.scale_fmt = config.quantization_config["scale_fmt"]
 
 **Patched**:
 ```python
-self.scale_fmt = config.quantization_config.get("scale_fmt", "ue8m0")
-```
-
-**Why**: RedHat's artifact (and ours) don't include `scale_fmt` as an explicit key in `quantization_config` because `ue8m0` is the implicit default for FP8_BLOCK. The original `[...]` indexing crashes with `KeyError`.
-
-### Patch 3 — BF16 load: `getattr(config, "quantization_config", None) or {}` (PR #43288 follow-up)
-
-**File**: `vllm/models/deepseek_v4/nvidia/model.py:909` (same line as patch 2)
-
-**After patch 2**:
-```python
-self.scale_fmt = config.quantization_config.get("scale_fmt", "ue8m0")
-```
-
-**Needs to become** (so BF16 models load too):
-```python
 _qc = getattr(config, "quantization_config", None) or {}
 self.scale_fmt = _qc.get("scale_fmt", "ue8m0")
 ```
 
-**Why**: BF16 (unquantized) models have **no `quantization_config` attribute at all** on the HF config object — not even an empty dict. Patch 2 alone crashes on `AttributeError: 'DeepseekV4Config' object has no attribute 'quantization_config'` when loading the BF16 reference. The `getattr ... or {}` form handles both:
-- BF16 (`quantization_config` attribute missing): `getattr` returns `None`, the `or {}` substitutes empty dict, `.get("scale_fmt", "ue8m0")` returns the default `"ue8m0"`.
-- Quantized without explicit `scale_fmt` (like ours and RedHat's): `getattr` returns the dict, `.get` returns the default.
+**Why**: Some quantized artifacts (and ours) don't include `scale_fmt` as an explicit key. BF16 reference models have no `quantization_config` attribute at all. Original `[...]` indexing crashes with `KeyError` / `AttributeError`.
 
-This was discovered when bringing up BF16 DSV4-Flash at TP=8 for the reference baseline benchmark.
-
-### Patch 4 — `weight_scale_inv`-or-`weight_scale` fallback ([PR #43290](https://github.com/vllm-project/vllm/pull/43290))
+### Patch 3 — `weight_scale_inv`-or-`weight_scale` fallback ([PR #43290](https://github.com/vllm-project/vllm/pull/43290))
 
 **File**: `vllm/models/deepseek_v4/attention.py:334`
 
@@ -87,55 +70,79 @@ weight_scale_inv = self.wo_a.weight_scale_inv
 weight_scale_inv = getattr(self.wo_a, "weight_scale_inv", None) or self.wo_a.weight_scale
 ```
 
-**Why**: Different llm-compressor versions emit the attention scale tensor under different attribute names. Our artifact (compressed-tensors `0.15.1a20260515`) uses `weight_scale`; the vLLM DSV4 model hardcodes `weight_scale_inv`. The fallback handles both.
+**Why**: Different llm-compressor versions emit the attention scale tensor under different attribute names. Some artifacts (compressed-tensors `0.15.1a20260515`) use `weight_scale`; the vLLM DSV4 model hardcodes `weight_scale_inv`. Fallback handles both.
 
-**Symptom without patch**: `AttributeError: 'CompressedLinearMethod' object has no attribute 'weight_scale_inv'`
+### Patch 4 — MTP loader: `.scale` detector + candidate-list ([PR #43319](https://github.com/vllm-project/vllm/pull/43319))
 
-### Patch 5 — MTP-quant-detect + BF16 `wo_a` fallback ([PR #43319](https://github.com/vllm-project/vllm/pull/43319))
+**THE LOAD-BEARING PATCH for MTP.**
 
 **Files**:
-1. `vllm/models/deepseek_v4/nvidia/mtp.py` (`DSV4MultiTokenPredictorLayer.__init__`)
-2. `vllm/models/deepseek_v4/attention.py` (forward branch)
+1. `vllm/models/deepseek_v4/nvidia/mtp.py` (`_mtp_block_is_quantized_on_disk` detector + `.scale` candidate-list resolution in `load_weights`)
 
-**Issue**: vLLM's MTP draft-model construction inherits the main model's `quant_config`. For our artifact, the MTP block is **unquantized BF16 on disk**, but the construction path tries to apply NVFP4-FP8 quantization to it, which crashes the attention forward because the `wo_a` weights are BF16, not FP8.
+**Fix in detector** (the actual root cause of every "3% MTP" measurement):
 
-**Fix in mtp.py**:
 ```python
-def _mtp_block_is_quantized_on_disk(vllm_config):
-    """Return True if the safetensors index lists FP8/NVFP4 dtypes under mtp.0.*"""
-    import json
-    try:
-        idx_path = os.path.join(vllm_config.model_config.model, "model.safetensors.index.json")
-        idx = json.load(open(idx_path))
-        # Walk all keys under mtp.0 — if any are FP8/INT4/packed, MTP IS quantized
-        ...  # full impl in the PR
-    except Exception:
-        return True  # safe default: assume quantized (matches old behavior)
-
-class DSV4MultiTokenPredictorLayer:
-    def __init__(self, vllm_config, ...):
-        if not _mtp_block_is_quantized_on_disk(vllm_config):
-            quant_config = None  # override: MTP is BF16 on disk, don't quantize
-        ...
+quant_suffixes = (
+    ".scale",   # ← THIS ONE. DSV4 native FP8 block scale convention.
+    ".weight_scale",
+    ".weight_scale_inv",
+    ".weight_packed",
+    ".weight_global_scale",
+    ".input_global_scale",
+    ".weight_zero_point",
+)
 ```
 
-**Fix in attention.py forward**:
-```python
-class DeepseekV4Attention:
-    def __init__(self, ...):
-        # Cache at init so torch.compile doesn't trace hasattr() at runtime
-        self._wo_a_is_unquantized = not isinstance(self.wo_a.quant_method, FP8_BLOCK_methods)
-        ...
+Without `.scale` in the list, the detector scanned the raw on-disk `mtp.*` keys, found nothing matching `.weight_scale*`, returned False → MTP block built unquantized → `e_proj.weight_scale_inv` never registered → `KeyError` at load → all earlier attempts worked around by **dequantizing mtp.0 to BF16**, which broke MTP acceptance entirely.
 
-    def forward(self, ...):
-        if current_platform.is_rocm() or self._wo_a_is_unquantized:
-            # BF16 wo_a path — route through rocm_inv_rope_einsum (it's BF16-compatible)
-            return self._rocm_inv_rope_einsum_path(...)
-        # FP8 quantized path (the original)
-        ...
+**Fix in `load_weights`**: candidate-list scale resolution that tries both `.weight_scale_inv` AND `.weight_scale` suffixes for non-expert scales, with optional `.mtp_block.` prefix variants. Handles the spec layer's mtp_block name rewrite.
+
+### Patch 5 — DSV4 MegaMoE early-fail for NVFP4 ([PR #43467](https://github.com/vllm-project/vllm/pull/43467))
+
+**File**: `vllm/models/deepseek_v4/nvidia/model.py` (`DeepseekV4MoE.__init__`)
+
+**Adds**:
+```python
+if self.use_mega_moe:
+    _qc = getattr(config, "quantization_config", None) or {}
+    _algo = (_qc.get("moe_quant_algo") if isinstance(_qc, dict) else None)
+    if isinstance(_algo, str) and _algo.upper() == "NVFP4":
+        raise NotImplementedError(
+            "DeepSeek V4 MegaMoE does not currently dispatch NVFP4 expert "
+            "layout. Use --moe-backend flashinfer_trtllm for NVFP4 MoE "
+            "artifacts on Blackwell."
+        )
 ```
 
-**Why**: Without this, the MTP draft model crashes on first forward because `self.wo_a` is BF16 but the forward path expects FP8 scales.
+**Why**: Clear error instead of `KeyError: 'layers.0.ffn.experts.w13_input_scale'` when users try `--moe-backend deep_gemm_mega_moe` on an NVFP4 artifact. Closes [vLLM #43454](https://github.com/vllm-project/vllm/issues/43454).
+
+### Patch v12b — Per-layer MoE routing (local, upstream PR pending)
+
+**File**: `vllm/models/deepseek_v4/quant_config.py` (`DSV4FP8Config.get_quant_method`)
+
+**Adds**: prefix-based MTP layer detection. When prefix matches an MTP layer (index ≥ `num_hidden_layers`), force `Mxfp4MoEMethod` regardless of global `moe_quant_algo='NVFP4'`. Trunk MoE dispatch unchanged.
+
+```python
+import re as _re
+_is_mtp_layer = False
+try:
+    from vllm.config import get_current_vllm_config
+    hf_cfg = get_current_vllm_config().model_config.hf_config
+    n_hidden = int(getattr(hf_cfg, 'num_hidden_layers', 10**9))
+    _m = _re.search(r'\.layers\.(\d+)\.', prefix or '')
+    _is_mtp_layer = bool(_m and int(_m.group(1)) >= n_hidden)
+except Exception:
+    pass
+if self.expert_dtype == "fp4":
+    if self.moe_quant_algo == "NVFP4" and not _is_mtp_layer:
+        return ModelOptNvFp4FusedMoE(...)
+    # MTP layer OR moe_quant_algo!='NVFP4' → MXFP4 path
+    return Mxfp4MoEMethod(layer.moe_config)
+```
+
+**Why**: A hybrid NVFP4-trunk + MXFP4-MTP artifact (which is what v12 ships, following NVIDIA's V3.2-NVFP4 recipe) needs per-layer MoE dispatch. The single global `moe_quant_algo` is too restrictive.
+
+Saved as [`patches/patch_v12b_per_layer_moe_routing.diff`](../patches/patch_v12b_per_layer_moe_routing.diff).
 
 ## Other gotchas (no patch needed, just configuration)
 
@@ -149,58 +156,56 @@ python3 -c "import torch; print(torch.cuda.get_device_capability(0))"
 # Expect: (10, 3)
 ```
 
-Building vLLM with `TORCH_CUDA_ARCH_LIST=10.0a` produces `sm_100a` binaries that silently fail to find kernels at runtime on `sm_103a`. The `a` suffix is non-portable arch-family-specific.
+Building vLLM with `TORCH_CUDA_ARCH_LIST=10.0a` produces `sm_100a` binaries that fail at runtime on `sm_103a`. The `a` suffix is non-portable arch-family-specific.
 
 ### 2. `CUDA_HOME=/usr/local/cuda` at serve time
 
 The AWS DLAMI bundles a runtime-only CUDA at `/opt/pytorch/cuda` (no headers). vLLM's Tilelang backend invokes `nvcc` at runtime, which fails on missing headers. Point at a full CUDA toolkit install:
 
 ```bash
-sudo apt install cuda-toolkit-13-0  # or matching your CUDA version
+sudo apt install cuda-toolkit-13-0
 export CUDA_HOME=/usr/local/cuda
 ```
 
-### 3. `VLLM_TEST_FORCE_FP8_MARLIN=1`
+### 3. `ninja` system-wide (not just venv)
 
-DeepGemm's `sm_103a` FP8 kernels are partial as of 2026-05. The Marlin FP8 path is the safe default until DeepGemm catches up. Set `VLLM_TEST_FORCE_FP8_MARLIN=1` at serve startup.
+vLLM worker subprocesses don't inherit the venv PATH. If `ninja` is only in `/opt/pytorch/bin`, the workers' JIT compile of flashinfer's FP4 MoE module fails with `FileNotFoundError: [Errno 2] No such file or directory: 'ninja'`. Install system ninja:
 
-### 4. Don't use `--system-site-packages`
+```bash
+sudo apt install ninja-build
+```
 
-If your system Python is older than the venv Python (e.g. system 3.12, venv 3.13), inheriting `dist-packages` causes `pyo3_runtime.PanicException` on `cryptography` import. Use a clean venv without `--system-site-packages`.
+### 4. Pin flashinfer to 0.6.8.post1
 
-### 5. NCCL collectives on B300
+`flashinfer-cubin==0.6.11.post2` silently crashes vLLM workers (see V4-Pro finding #4 above). After the install script, force:
 
-We hit NCCL+NVLink hangs on the GPTQ Hessian-reduce path during calibration on B300. Symptoms: workers stuck at `cudaStreamSynchronize`, NVRM "Failed to send inband data" in `dmesg`. Workarounds tried (none helped): `NCCL_P2P_DISABLE=1`, `NCCL_NVLS_ENABLE=0`, `NCCL_DEBUG=INFO`.
+```bash
+pip install --no-deps 'flashinfer-cubin==0.6.8.post1' 'flashinfer-python==0.6.8.post1'
+```
 
-Resolution for this artifact: used `QuantizationModifier` (RTN-style, weight-only) instead of `GPTQModifier`. Has **zero `dist.*` calls in its main path** — no NCCL collectives. May still apply to other calibration recipes; verify your modifier doesn't hit the same hang.
+### 5. Don't use `--system-site-packages`
+
+If your system Python is older than the venv Python (e.g. system 3.12, venv 3.13), inheriting `dist-packages` causes `pyo3_runtime.PanicException` on `cryptography` import. Use a clean venv.
 
 ### 6. Transformers `_keys_to_ignore_on_load_unexpected` strips MTP
 
-`DeepseekV4PreTrainedModel._keys_to_ignore_on_load_unexpected = [r"(^|\.)mtp\..*"]` (transformers 5.8.1, still on `main` as of 2026-05-20) silently drops `mtp.*` keys at load time. To preserve MTP during calibration, apply [`patches/modeling_deepseek_v4.py.diff`](../patches/modeling_deepseek_v4.py.diff) which removes that line.
-
-This is **for calibration only** — serving the final artifact on vLLM doesn't go through transformers' load path.
-
-**Upstream fix in flight (sibling workstream)**: [huggingface/transformers#46127](https://github.com/huggingface/transformers/pull/46127) — adds a `DeepseekV4NextNPredictor` class so `mtp.*` keys load into real submodules instead of being filtered out. Currently waiting on a `forward()` implementation + tests per maintainer feedback; the artifact in this repo demonstrates the load-path side works end-to-end (saved weights round-trip through calibration → save → vLLM load → spec-decode serve with measured 81.6% MTP acceptance on AIME 2024). When #46127 lands, this gotcha and the `patches/modeling_deepseek_v4.py.diff` patch become obsolete.
+`DeepseekV4PreTrainedModel._keys_to_ignore_on_load_unexpected = [r"(^|\.)mtp\..*"]` (transformers 5.8.1) silently drops `mtp.*` keys at load time. For calibration only — apply [`patches/modeling_deepseek_v4.py.diff`](../patches/modeling_deepseek_v4.py.diff). Serving on vLLM doesn't hit this. Upstream fix in flight at [huggingface/transformers#46127](https://github.com/huggingface/transformers/pull/46127).
 
 ### 7. compressed-tensors `from_accelerate` AttributeError on sharded modules
 
-`offload/dispatch.py:95` raises `AttributeError: 0 is not an nn.Module` when running multi-rank with expert sharding. Workaround: monkey-patch `Observer.synchronize` to short-circuit on rank > 0. This was a V4-Flash predecessor finding; documented in the predecessor repo at `https://github.com/canada-quant/dsv4-flash-nvfp4-fp8-mtp/blob/main/docs/findings/multirank_observer_sync_hang.md`. Not relevant to V4-Pro since the V4-Pro recipe is a byte-level format conversion (no calibration loop), so the multi-rank Observer code path is not exercised.
+Calibration-only issue. Workaround in predecessor repo: monkey-patch `Observer.synchronize` to short-circuit on rank > 0. Not exercised in V4-Pro's byte-level conversion.
 
 ### 8. llm-compressor inference-mode tensor crash on MTP
 
-llm-compressor's calibration loop wraps in `torch.inference_mode()` which crashes on the MTP block's hand-written tensor operations. Filed as llm-compressor [#2745](https://github.com/vllm-project/llm-compressor/issues/2745). Workaround in `scripts/calibration_model.py`: explicit `torch.no_grad()` instead of `inference_mode()`.
+llm-compressor's calibration loop wraps in `torch.inference_mode()` which crashes on the MTP block's hand-written tensor operations. Filed as llm-compressor [#2745](https://github.com/vllm-project/llm-compressor/issues/2745). Workaround: explicit `torch.no_grad()` instead of `inference_mode()`. Not exercised in V4-Pro's format-conversion pipeline.
 
 ### 9. vLLM `(1,)`-shape `global_scale` loader broadcast
 
-vLLM's FusedMoE loader for NVFP4 expects scalar (`shape=()`) `global_scale` tensors, but llm-compressor emits `shape=(1,)`. Squeeze in postprocess: `scripts/squeeze_global_scales.py`. Filed as vLLM [#43297](https://github.com/vllm-project/vllm/issues/43297).
+vLLM's FusedMoE loader for NVFP4 expects scalar (`shape=()`) `global_scale` tensors, but llm-compressor emits `shape=(1,)`. Filed as vLLM [#43297](https://github.com/vllm-project/vllm/issues/43297). Workaround: squeeze in postprocess. Not exercised in V4-Pro's format-conversion pipeline (our conversion writes shape `(1,)` and vLLM handles it after our local patches; if you observe the issue, use `scripts/squeeze_global_scales.py`).
 
-### 10. MTP draft model inherits main model's quant scheme
+### 10. EvalPlus is the right HumanEval harness for chat-mode models
 
-vLLM's DSV4 MTP draft construction copies `quant_config` from the main model. If main is NVFP4-quantized but MTP is BF16 on disk, the draft model crashes at first forward. Filed as vLLM [#43304](https://github.com/vllm-project/vllm/issues/43304) — our patch 5 above addresses this on the load + forward paths.
-
-### 11. EvalPlus is the right HumanEval harness for chat-mode models
-
-lm_eval's HumanEval scoring is broken on chat-mode-only models (it produces gibberish answers because it can't stop generation correctly). Use EvalPlus instead:
+lm_eval's HumanEval scoring is broken on chat-mode-only models. Use EvalPlus instead:
 
 ```bash
 pip install evalplus
@@ -209,13 +214,13 @@ evalplus.codegen humaneval --base-url http://localhost:8089/v1 \
 evalplus.evaluate humaneval --samples <output.jsonl>
 ```
 
-We measured **91.5% pass@1** with EvalPlus vs ~6-20% with lm_eval on the same artifact — the gap is the harness, not the model.
+We measured **95.1% pass@1** with EvalPlus vs ~6-20% with lm_eval — the gap is the harness, not the model.
 
-### 12. `--apply_chat_template` does NOT inject thinking-mode kwargs
+### 11. `--apply_chat_template` does NOT inject thinking-mode kwargs
 
-lm_eval's `--apply_chat_template` applies the chat template but doesn't pass `chat_template_kwargs.thinking=true`. To benchmark thinking-mode, you need a custom harness that calls vLLM's chat endpoint with `extra_body={"chat_template_kwargs": {...}}`. See `scripts/aime_bench.py` in our repo for a reference implementation.
+lm_eval applies the chat template but doesn't pass `chat_template_kwargs.thinking=true`. For thinking-mode benchmarks, write a custom harness that calls vLLM's chat endpoint with `extra_body={"chat_template_kwargs": {...}}`. See `scripts/aime_bench.py` for a reference.
 
-### 13. OpenAI Python SDK rejects `chat_template_kwargs` as direct kwarg
+### 12. OpenAI Python SDK rejects `chat_template_kwargs` as direct kwarg
 
 ```python
 # WRONG — raises "AsyncCompletions.create() got an unexpected keyword argument"
@@ -225,14 +230,19 @@ client.chat.completions.create(model=..., chat_template_kwargs={"thinking": True
 client.chat.completions.create(model=..., extra_body={"chat_template_kwargs": {"thinking": True}})
 ```
 
-### 14. `max_tokens=16384` is too low for AIME thinking=high
+### 13. `max_tokens=16384` is too low for AIME thinking=high
 
-Some AIME problems use up to ~25K tokens of reasoning at `thinking=high`. With `max_tokens=16384`, ~25% of responses truncate; with `max_tokens=65536`, only ~10% truncate (and those are reasoning-loop pathological — bumping further doesn't help). Set `max_tokens=65536` for any thinking-mode reasoning benchmark. Report **both raw pass@1 AND non-truncated pass@1** to disambiguate truncation from reasoning failure.
+Some AIME problems use up to ~25K tokens of reasoning at `thinking=high`. With `max_tokens=16384`, ~25% of responses truncate; with `max_tokens=65536`, only ~10% truncate. Set `max_tokens=65536` for any thinking-mode reasoning benchmark. Report **both raw pass@1 AND non-truncated pass@1**.
+
+### 14. Cold start is ~15 min — that's expected
+
+Cuda-graph capture + flashinfer FP4 MoE JIT + torch.compile dynamo + AOT autograd takes ~12-15 minutes from process spawn to "Application startup complete". During the wait, the engine logs `No available shared memory broadcast block found in 60 seconds` warnings — these are not errors. If 30 minutes passes with no further progress, check for actual worker crashes via `grep ERROR /var/log/vllm.log`.
 
 ## Verifying the patches are applied
 
 ```bash
-cd /data/src/vllm
+cd /opt/dlami/nvme/src/vllm
+
 grep -n "bool(input_quant and not input_quant.dynamic)" \
     vllm/model_executor/layers/quantization/compressed_tensors/compressed_tensors.py
 # Expect: 5 matches
@@ -240,25 +250,28 @@ grep -n "bool(input_quant and not input_quant.dynamic)" \
 grep -n 'getattr(config, "quantization_config"' vllm/models/deepseek_v4/nvidia/model.py
 # Expect: 1 match (around line 909)
 
-grep -n 'weight_scale_inv.*or.*weight_scale' vllm/models/deepseek_v4/attention.py
-# Expect: 1 match (around line 334)
+grep -n 'weight_scale_inv.*or.*weight_scale\|getattr.*weight_scale_inv' vllm/models/deepseek_v4/attention.py
+# Expect: 1+ match
 
-grep -n '_mtp_block_is_quantized_on_disk' vllm/models/deepseek_v4/nvidia/mtp.py
-# Expect: 2+ matches
+grep -n '"\.scale",' vllm/models/deepseek_v4/nvidia/mtp.py
+# Expect: 1 match in _mtp_block_is_quantized_on_disk's quant_suffixes tuple
+
+grep -n '_is_mtp_layer' vllm/models/deepseek_v4/quant_config.py
+# Expect: 3+ matches (the v12b patch)
 ```
 
-If any are missing, the corresponding load or forward will crash.
+If any are missing, MTP load will fail or fall back to ~3% acceptance.
 
 ## Upstream PR status
 
 | PR | Title | Status |
 |---|---|---|
-| [#43248](https://github.com/vllm-project/vllm/pull/43248) | `bool()` wrap on `is_static_input_scheme` | filed 2026-05-21, open |
-| [#43288](https://github.com/vllm-project/vllm/pull/43288) | `.get("scale_fmt", "ue8m0")` defensive | filed 2026-05-21, open |
-| [#43290](https://github.com/vllm-project/vllm/pull/43290) | `weight_scale_inv`-or-`weight_scale` fallback | filed 2026-05-21, open |
-| [#43319](https://github.com/vllm-project/vllm/pull/43319) | MTP-quant-detect + BF16 `wo_a` fallback | filed 2026-05-21, open |
-| [#43297](https://github.com/vllm-project/vllm/issues/43297) | `(1,)`-shape `global_scale` loader broadcast (issue) | filed 2026-05-21, open |
-| [#43304](https://github.com/vllm-project/vllm/issues/43304) | MTP draft inherits main quant scheme (issue) | filed 2026-05-21, open |
-| [llm-compressor #2745](https://github.com/vllm-project/llm-compressor/issues/2745) | MTP inference-mode crash | filed earlier, open |
+| [#43248](https://github.com/vllm-project/vllm/pull/43248) | `bool()` wrap on `is_static_input_scheme` | open |
+| [#43288](https://github.com/vllm-project/vllm/pull/43288) | `scale_fmt` defensive `.get()` | open |
+| [#43290](https://github.com/vllm-project/vllm/pull/43290) | `weight_scale_inv`-or-`weight_scale` fallback | open |
+| [#43319](https://github.com/vllm-project/vllm/pull/43319) | MTP loader: **`.scale` detector** + candidate-list scale resolution | open |
+| [#43467](https://github.com/vllm-project/vllm/pull/43467) | DSV4 MegaMoE early-fail for NVFP4 | open |
+| v12b per-layer MoE routing | DSV4FP8Config: MTP-layer dispatch override | local; upstream PR pending |
+| [#43297](https://github.com/vllm-project/vllm/issues/43297) | `(1,)`-shape `global_scale` (issue) | open |
 
-When these merge upstream, you can drop the corresponding local patches.
+When these merge upstream, drop the corresponding local patches from the install script.

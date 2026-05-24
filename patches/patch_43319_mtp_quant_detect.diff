@@ -53,6 +53,7 @@ index 071abe2f4a..49b2a60a96 100644
 +        # Scan only ``mtp.*`` keys for quantization-scale suffixes. This is
 +        # the minimum information needed; we don't need to read tensor headers.
 +        quant_suffixes = (
++            ".scale",   # DSV4 native FP8 block scale convention (the load-bearing one)
 +            ".weight_scale",
 +            ".weight_scale_inv",
 +            ".weight_packed",

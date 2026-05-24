@@ -213,21 +213,33 @@ experts); MTP loader inspects safetensors header for
 Required for V4-Pro MTP serving.
 Pending upstream PR: https://github.com/vllm-project/vllm/pull/43319"
 
-apply_patch "patch_v0p3_dsv4_mtp_bf16_dispatch.diff" "v0p3-mtp-bf16" \
-  "Apply v0.3 patch: BF16 mtp.0 block dispatch + deep_gemm+NVFP4 guard
+apply_patch "patch_v12b_per_layer_moe_routing.diff" "v12b-per-layer-moe" \
+  "Apply v12b patch: per-layer MoE routing for hybrid NVFP4-trunk + MXFP4-MTP
 
-deepseek_v4/nvidia/model.py DeepseekV4MoE:
-  (a) when prefix matches an MTP layer (index >= num_hidden_layers) and
-      the on-disk MTP block has no quant scale sidecars, construct
-      FusedMoE unquantized AND override moe_backend to 'triton' (the
-      default flashinfer_trtllm unquantized backend doesn't support
-      V4-Pro routing method 100). Required to load the canada-quant
-      v0.3 artifact (mtp.0.* fully BF16, +98 GB vs v0.2 hybrid).
-  (b) early-fail with NotImplementedError when --moe-backend
-      deep_gemm_mega_moe is used with NVFP4 artifacts; mega-kernel
-      expects fused-name MoE params, NVFP4 ModelOpt uses per-expert
-      names. Closes vLLM issue #43454.
-Pending upstream PR: https://github.com/vllm-project/vllm/pull/43467 (b only)"
+deepseek_v4/quant_config.py DSV4FP8Config.get_quant_method: detect MTP layer
+by prefix (idx >= num_hidden_layers). When layer is MTP, force Mxfp4MoEMethod
+regardless of global moe_quant_algo='NVFP4'. Trunk dispatch unchanged.
+
+Required for v12+ artifacts that follow the NVIDIA V3.2-NVFP4 recipe:
+NVFP4 trunk routed experts + native MXFP4 mtp.0 routed experts (because the
+entire MTP layer is excluded from quantization to preserve MTP head accuracy).
+
+Without this patch, the MTP MoE construction goes through
+ModelOptNvFp4FusedMoE expecting NVFP4-packed weights, but the on-disk
+mtp.0.ffn.experts.* are MXFP4 — load fails with shape/key mismatch.
+
+Pending upstream PR: TBD"
+
+apply_patch "patch_43467_megamoe_nvfp4_guard.diff" 43467 \
+  "Apply PR #43467: DSV4 MegaMoE early-fail for NVFP4
+
+deepseek_v4/nvidia/model.py DeepseekV4MoE: when --moe-backend
+deep_gemm_mega_moe is used with an NVFP4 artifact, raise a clear
+NotImplementedError instead of the cryptic KeyError at load. Mega-kernel
+expects fused-name MoE params; NVFP4 ModelOpt uses per-expert names.
+
+Closes vLLM issue #43454.
+Pending upstream PR: https://github.com/vllm-project/vllm/pull/43467" || true
 
 # ---------- cherry-pick PR #42209 (sychen52, NVIDIA): NVFP4 MOE for V4 ----------
 # This is the NVFP4 V4-Pro serving path (Phase 5 from this repo's PLAN.md).
