@@ -80,7 +80,7 @@ These numbers are measured by **us**, on **our** vLLM build, on **our** 8× B300
 |---|---|---|---|
 | MTP draft acceptance (n=1, 20-prompt probe, same vLLM build) | **90.92%** | **91.21%** | within noise |
 | GSM8K matched n=300 (chat greedy, max_tokens=2048) | 0.9900 (297/300) | **0.9867** (296/300) | -1 problem (Wilson CIs overlap) |
-| GSM8K full n=1319 | _measurement in progress_ | **0.9659** (CI [0.9547, 0.9744]) | TBD |
+| GSM8K full n=1319 | **0.9682** (CI [0.9572, 0.9764]) | **0.9659** (CI [0.9547, 0.9744]) | -3 problems (within CI overlap) |
 | AIME 2024 (Non-Think greedy) (n=30, max_tokens=60000) | _measurement in progress_ | **21/30 = 70.00%** (0 truncations) | TBD |
 | HumanEval pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.951** | TBD |
 | HumanEval+ pass@1 (EvalPlus greedy) | _measurement in progress_ | **0.902** | TBD |
