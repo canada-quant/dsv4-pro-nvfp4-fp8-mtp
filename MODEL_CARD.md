@@ -61,7 +61,7 @@ IFEval (chat-eval) and MMLU-Pro 5-shot results are queued; numbers added when co
 
 ## Quality vs the native source (compression-loss check)
 
-NVFP4 conversion is a **lossless format change** on the trunk routed experts: MXFP4 group=32 → NVFP4 group=16. Everything else (attention, shared experts, the entire MTP block) is byte-passthrough. Numbers measured on identical hardware, identical serving config, identical prompts, identical sampling params (greedy, temp=0) — only the trunk-expert format differs.
+NVFP4 conversion is a **deterministic format change** on the trunk routed experts: MXFP4 group=32 (E8M0 block scales) → NVFP4 group=16 (E4M3 block scales + per-tensor FP32 `weight_scale_2`). It is **not strictly lossless in the mathematical sense** — regrouping 32 → 16 cannot recover precision the original MXFP4 step already discarded, and a handful of source E8M0 exponents fall outside E4M3's exact-power-of-2 range (the two-level NVFP4 scheme with the per-tensor FP32 global scale absorbs that gap but does not reverse it). The conversion is deterministic (no calibration, no forward pass), and **empirically within quantization noise** on every benchmark we measured apples-to-apples vs the upstream MXFP4 checkpoint. Numbers below are on identical hardware, identical vLLM build, identical bench harness, identical sampling params (greedy, temp=0) — only the trunk-expert format and recommended MoE backend differ.
 
 | Benchmark | Native source `deepseek-ai/DeepSeek-V4-Pro` (MXFP4) | This artifact (NVFP4) | Δ |
 |---|---|---|---|
