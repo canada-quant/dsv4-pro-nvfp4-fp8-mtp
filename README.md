@@ -4,6 +4,8 @@ Reproduction repo for [`canada-quant/DeepSeek-V4-Pro-NVFP4-FP8-MTP`](https://hug
 
 V4-Pro shipped natively as a mixed FP4+FP8+BF16 checkpoint, so this conversion does not save disk (artifact is 913 GiB vs upstream 864 GiB). **The win is throughput** — on the same vLLM build, same 8× B300 hardware, same bench, MTP n=1 + cuda graphs ON, **NVFP4 runs +25% to +37% faster than upstream MXFP4** at production concurrencies, while preserving MTP at native parity.
 
+> **Hardware target: B300 SXM6 AC (SM 10.3, sm_103a) or B200 (SM 10.0).** Real NVFP4 tensor-core math (`tcgen05.mma`) executes via FlashInfer TRTLLM on these parts. Consumer Blackwell (RTX PRO 6000 / SM 12.0) is **not a supported target** for this Pro variant — vLLM's NVFP4 oracle rejects sm_120 for the dense+MoE path V4-Pro uses, and even if forced through Marlin the size of V4-Pro (913 GiB on disk) exceeds typical consumer Blackwell VRAM budgets. For consumer Blackwell deployments use the [Flash NVFP4-FP8-MTP sibling](https://github.com/canada-quant/dsv4-flash-nvfp4-fp8-mtp) which is smaller AND has a documented Marlin BF16 fallback path (storage win preserved, but no FLOPS win on SM 12.0 — see that repo's README for the honest naming caveat).
+
 ## Family / related repos
 
 | Repo | HF model card | Role |
